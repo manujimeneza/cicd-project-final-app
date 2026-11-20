@@ -23,7 +23,15 @@ from dataclasses import replace
 from datetime import date
 from typing import Protocol
 
-from app.dominio import Deuda, GastoCompartido, Grupo, Movimiento, Pago
+from app.dominio import (
+    Deuda,
+    GastoCompartido,
+    GastoRecurrente,
+    Grupo,
+    MetaAhorro,
+    Movimiento,
+    Pago,
+)
 
 
 class Almacen(Protocol):
@@ -47,6 +55,13 @@ class Almacen(Protocol):
     def agregar_pago(self, grupo_id: str, pago: Pago) -> None: ...
     def foto(self, usuario: str) -> tuple[bytes, str] | None: ...
     def guardar_foto(self, usuario: str, datos: bytes, tipo: str) -> None: ...
+    def recurrentes(self, usuario: str) -> list[GastoRecurrente]: ...
+    def agregar_recurrente(self, usuario: str, recurrente: GastoRecurrente) -> None: ...
+    def eliminar_recurrente(self, usuario: str, recurrente_id: str) -> None: ...
+    def metas(self, usuario: str) -> list[MetaAhorro]: ...
+    def agregar_meta(self, usuario: str, meta: MetaAhorro) -> None: ...
+    def agregar_aporte(self, usuario: str, meta_id: str, monto: int) -> None: ...
+    def eliminar_meta(self, usuario: str, meta_id: str) -> None: ...
 
 
 def _nuevo_id() -> str:
@@ -68,6 +83,8 @@ class AlmacenMemoria:
         self._gastos: dict[str, list[GastoCompartido]] = {}
         self._pagos: dict[str, list[Pago]] = {}
         self._fotos: dict[str, tuple[bytes, str]] = {}
+        self._recurrentes: dict[str, list[GastoRecurrente]] = {}
+        self._metas: dict[str, list[MetaAhorro]] = {}
 
     def perfil(self, usuario: str) -> str | None:
         return self._perfiles.get(usuario)
@@ -139,6 +156,31 @@ class AlmacenMemoria:
 
     def eliminar_deuda(self, usuario: str, deuda_id: str) -> None:
         self._deudas[usuario] = [x for x in self._deudas.get(usuario, []) if x.id != deuda_id]
+
+    def recurrentes(self, usuario: str) -> list[GastoRecurrente]:
+        return list(self._recurrentes.get(usuario, []))
+
+    def agregar_recurrente(self, usuario: str, recurrente: GastoRecurrente) -> None:
+        self._recurrentes.setdefault(usuario, []).append(replace(recurrente, id=recurrente.id or _nuevo_id()))
+
+    def eliminar_recurrente(self, usuario: str, recurrente_id: str) -> None:
+        self._recurrentes[usuario] = [x for x in self._recurrentes.get(usuario, []) if x.id != recurrente_id]
+
+    def metas(self, usuario: str) -> list[MetaAhorro]:
+        return list(self._metas.get(usuario, []))
+
+    def agregar_meta(self, usuario: str, meta: MetaAhorro) -> None:
+        self._metas.setdefault(usuario, []).append(replace(meta, id=meta.id or _nuevo_id()))
+
+    def agregar_aporte(self, usuario: str, meta_id: str, monto: int) -> None:
+        metas = self._metas.setdefault(usuario, [])
+        self._metas[usuario] = [
+            replace(meta, ahorrado=min(meta.objetivo, meta.ahorrado + monto)) if meta.id == meta_id else meta
+            for meta in metas
+        ]
+
+    def eliminar_meta(self, usuario: str, meta_id: str) -> None:
+        self._metas[usuario] = [x for x in self._metas.get(usuario, []) if x.id != meta_id]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +327,53 @@ class AlmacenDynamo:
     def guardar_foto(self, usuario: str, datos: bytes, tipo: str) -> None:
         self._t.put_item(Item={"PK": f"USER#{usuario}", "SK": "FOTO", "datos": datos, "tipo": tipo})
 
+    # --- planificación ---
+    def recurrentes(self, usuario: str) -> list[GastoRecurrente]:
+        return [
+            GastoRecurrente(
+                i["nombre"], int(i["monto"]), i["categoria"], i["frecuencia"], int(i["dia"]),
+                i.get("activo", True), i["SK"].removeprefix("RECURRENTE#"),
+            )
+            for i in self._consultar(f"USER#{usuario}", "RECURRENTE#")
+        ]
+
+    def agregar_recurrente(self, usuario: str, recurrente: GastoRecurrente) -> None:
+        recurrente_id = recurrente.id or _nuevo_id()
+        self._t.put_item(Item={
+            "PK": f"USER#{usuario}", "SK": f"RECURRENTE#{recurrente_id}",
+            "nombre": recurrente.nombre, "monto": recurrente.monto, "categoria": recurrente.categoria,
+            "frecuencia": recurrente.frecuencia, "dia": recurrente.dia, "activo": recurrente.activo,
+        })
+
+    def eliminar_recurrente(self, usuario: str, recurrente_id: str) -> None:
+        self._t.delete_item(Key={"PK": f"USER#{usuario}", "SK": f"RECURRENTE#{recurrente_id}"})
+
+    def metas(self, usuario: str) -> list[MetaAhorro]:
+        return [
+            MetaAhorro(
+                i["nombre"], int(i["objetivo"]), int(i["ahorrado"]),
+                date.fromisoformat(i["fecha_objetivo"]), i["SK"].removeprefix("META#"),
+            )
+            for i in self._consultar(f"USER#{usuario}", "META#")
+        ]
+
+    def agregar_meta(self, usuario: str, meta: MetaAhorro) -> None:
+        meta_id = meta.id or _nuevo_id()
+        self._t.put_item(Item={
+            "PK": f"USER#{usuario}", "SK": f"META#{meta_id}",
+            "nombre": meta.nombre, "objetivo": meta.objetivo, "ahorrado": meta.ahorrado,
+            "fecha_objetivo": meta.fecha_objetivo.isoformat(),
+        })
+
+    def agregar_aporte(self, usuario: str, meta_id: str, monto: int) -> None:
+        for meta in self.metas(usuario):
+            if meta.id == meta_id:
+                self.agregar_meta(usuario, replace(meta, ahorrado=min(meta.objetivo, meta.ahorrado + monto)))
+                return
+
+    def eliminar_meta(self, usuario: str, meta_id: str) -> None:
+        self._t.delete_item(Key={"PK": f"USER#{usuario}", "SK": f"META#{meta_id}"})
+
 
 # ---------------------------------------------------------------------------
 # Datos ficticios del modo demo
@@ -308,6 +397,9 @@ def almacen_demo(hoy: date | None = None) -> AlmacenMemoria:
     a.guardar_perfil(u, "Manuela")
     a.guardar_perfil("ana@ejemplo.com", "Ana")
     a.guardar_perfil("sara@ejemplo.com", "Sara")
+    a.agregar_recurrente(u, GastoRecurrente("Arriendo", 1800000, "Hogar", "Mensual", 1))
+    a.agregar_recurrente(u, GastoRecurrente("Netflix", 45000, "Ocio", "Mensual", 15))
+    a.agregar_meta(u, MetaAhorro("Viaje a Cartagena", 2500000, 750000, dia(28, 2).replace(year=dia(28, 2).year + 1)))
     for atras, mercado in ((5, 610000), (4, 720000), (3, 680000), (2, 590000), (1, 750000)):
         a.agregar_movimiento(u, Movimiento(dia(1, atras), 4200000, "Salario", "Otros", "Transferencia", "ingreso"))
         a.agregar_movimiento(u, Movimiento(dia(5, atras), mercado, "Mercado del mes", "Mercado", "Débito", "gasto"))

@@ -47,6 +47,14 @@ class TestValidacion:
 
 
 class TestPersonal:
+    def test_proyeccion_topes(self):
+        hoy = date(2026, 11, 10)
+        movs = [mov(300, "Mercado", fecha=date(2026, 11, 5)), mov(200, "Comida", fecha=date(2026, 11, 7))]
+        proyeccion = d.proyeccion_topes(movs, {"Mercado": 700, "Comida": 500}, hoy)
+        mercado = next(x for x in proyeccion if x["categoria"] == "Mercado")
+        assert mercado["gastado"] == 300
+        assert mercado["proyectado"] == 900
+        assert mercado["riesgo"] is True
     def test_del_mes_filtra(self):
         movs = [mov(1, fecha=date(2026, 11, 1)), mov(2, fecha=date(2026, 10, 31))]
         assert [m.monto for m in d.del_mes(movs, 2026, 11)] == [1]

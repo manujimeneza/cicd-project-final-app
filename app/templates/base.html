@@ -17,6 +17,7 @@
       <a href="{{ url_for('kuadra.inicio') }}" class="{{ 'activo' if ep == 'kuadra.inicio' }}"><span class="ico" aria-hidden="true">⌂</span><span>Inicio</span></a>
       <a href="{{ url_for('kuadra.analisis') }}" class="{{ 'activo' if ep == 'kuadra.analisis' }}"><span class="ico" aria-hidden="true">◔</span><span>Análisis</span></a>
       <a href="{{ url_for('kuadra.compartido') }}" class="{{ 'activo' if ep in ('kuadra.compartido', 'kuadra.nuevo_gasto_grupo', 'kuadra.nuevo_grupo') }}"><span class="ico" aria-hidden="true">⇄</span><span>Compartido</span></a>
+      <a href="{{ url_for('kuadra.planifica') }}" class="{{ 'activo' if ep in ('kuadra.planifica', 'kuadra.eliminar_recurrente', 'kuadra.aportar_meta', 'kuadra.eliminar_meta') }}"><span class="ico" aria-hidden="true">◎</span><span>Planifica</span></a>
       <a href="{{ url_for('kuadra.finanzas') }}" class="{{ 'activo' if ep == 'kuadra.finanzas' }} solo-escritorio"><span class="ico" aria-hidden="true">◎</span><span>Deudas y topes</span></a>
       <a href="{{ url_for('kuadra.nuevo_movimiento') }}" class="{{ 'activo' if ep == 'kuadra.nuevo_movimiento' }}"><span class="ico" aria-hidden="true">＋</span><span>Agregar</span></a>
       <a href="{{ url_for('kuadra.perfil') }}" class="{{ 'activo' if ep == 'kuadra.perfil' }} solo-movil"><span class="ico" aria-hidden="true">☺</span><span>Perfil</span></a>

@@ -29,10 +29,12 @@ from app.formularios import (
     GastoGrupoForm,
     GrupoForm,
     InvitarForm,
+    MetaAhorroForm,
     MovimientoForm,
     PagoForm,
     PreguntaForm,
     RegistroForm,
+    RecurrenteForm,
 )
 
 bp = Blueprint("kuadra", __name__)
@@ -326,6 +328,7 @@ def analisis():
         segmentos=segmentos_dona(por_categoria),
         barras=[{"mes": m, "valor": v, "alto": round(v * 100 / maximo)} for m, v in tendencia],
         alertas=d.alertas_topes(por_categoria, topes),
+        proyeccion=d.proyeccion_topes(movs, topes, hoy),
         diferencia_pct=round((tope_total - gastado_con_tope) * 100 / tope_total) if tope_total else None,
         deudas=d.orden_pago_deudas(almacen().deudas(u)),
     )
@@ -373,6 +376,96 @@ def finanzas():
         "finanzas.html", form=form, deudas=d.orden_pago_deudas(almacen().deudas(u)),
         topes=almacen().topes(u), categorias=d.CATEGORIAS,
     )
+
+
+@bp.route("/planifica", methods=["GET", "POST"])
+@login_requerido
+def planifica():
+    u = session["usuario"]
+    hoy = date.today()
+    recurrente_form = RecurrenteForm(prefix="r")
+    meta_form = MetaAhorroForm(prefix="m")
+
+    if recurrente_form.is_submitted() and recurrente_form.validate_on_submit():
+        try:
+            recurrente = d.validar_gasto_recurrente(d.GastoRecurrente(
+                recurrente_form.nombre.data.strip(),
+                recurrente_form.monto.data,
+                recurrente_form.categoria.data,
+                recurrente_form.frecuencia.data,
+                recurrente_form.dia.data,
+            ))
+        except d.DatoInvalido as err:
+            flash(str(err), "error")
+        else:
+            almacen().agregar_recurrente(u, recurrente)
+            flash("Gasto recurrente guardado.", "ok")
+            return redirect(url_for("kuadra.planifica"))
+
+    if meta_form.is_submitted() and meta_form.validate_on_submit():
+        try:
+            meta = d.validar_meta_ahorro(d.MetaAhorro(
+                meta_form.nombre.data.strip(),
+                meta_form.objetivo.data,
+                meta_form.ahorrado.data,
+                meta_form.fecha_objetivo.data,
+            ))
+        except d.DatoInvalido as err:
+            flash(str(err), "error")
+        else:
+            almacen().agregar_meta(u, meta)
+            flash("Meta de ahorro creada.", "ok")
+            return redirect(url_for("kuadra.planifica"))
+
+    recurrentes = almacen().recurrentes(u)
+    metas = almacen().metas(u)
+    compromisos = sum(r.monto for r in recurrentes if r.activo)
+    ingresos = d.total(d.del_mes(almacen().movimientos(u), hoy.year, hoy.month), "ingreso")
+    disponible = max(ingresos - compromisos, 0)
+
+    return render_template(
+        "planifica.html",
+        recurrente_form=recurrente_form,
+        meta_form=meta_form,
+        recurrentes=recurrentes,
+        metas=metas,
+        compromisos=compromisos,
+        ingresos=ingresos,
+        disponible=disponible,
+    )
+
+
+@bp.post("/planifica/recurrente/<recurrente_id>/eliminar")
+@login_requerido
+def eliminar_recurrente(recurrente_id: str):
+    almacen().eliminar_recurrente(session["usuario"], recurrente_id)
+    flash("Gasto recurrente eliminado.", "info")
+    return redirect(url_for("kuadra.planifica"))
+
+
+@bp.post("/planifica/meta/<meta_id>/aporte")
+@login_requerido
+def aportar_meta(meta_id: str):
+    if not FlaskForm().validate_on_submit():
+        abort(400)
+    try:
+        monto = int(request.form.get("monto") or 0)
+        if monto <= 0:
+            raise ValueError
+    except ValueError:
+        flash("El aporte debe ser mayor que cero.", "error")
+    else:
+        almacen().agregar_aporte(session["usuario"], meta_id, monto)
+        flash("Aporte registrado.", "ok")
+    return redirect(url_for("kuadra.planifica"))
+
+
+@bp.post("/planifica/meta/<meta_id>/eliminar")
+@login_requerido
+def eliminar_meta(meta_id: str):
+    almacen().eliminar_meta(session["usuario"], meta_id)
+    flash("Meta eliminada.", "info")
+    return redirect(url_for("kuadra.planifica"))
 
 
 # ---------- Compartido ----------

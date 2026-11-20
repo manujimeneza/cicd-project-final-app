@@ -44,6 +44,43 @@ def test_paginas_principales(sesion_demo):
         assert texto in resp.get_data(as_text=True)
 
 
+def test_proyeccion_en_analisis(sesion_demo):
+    html = sesion_demo.get("/analisis").get_data(as_text=True)
+    assert "Proyección a fin de mes" in html
+
+
+def test_planificacion_recurrente_y_meta(app, sesion_demo):
+    recurrente = sesion_demo.post("/planifica", data={
+        "r-nombre": "Internet",
+        "r-monto": "90000",
+        "r-categoria": "Servicios",
+        "r-frecuencia": "Mensual",
+        "r-dia": "8",
+    })
+    assert recurrente.status_code == 302
+    recurrentes = app.extensions["almacen"].recurrentes(USUARIO_DEMO)
+    assert any(r.nombre == "Internet" for r in recurrentes)
+
+    meta = sesion_demo.post("/planifica", data={
+        "m-nombre": "Fondo de emergencia",
+        "m-objetivo": "1000000",
+        "m-ahorrado": "100000",
+        "m-fecha_objetivo": "2027-12-31",
+    })
+    assert meta.status_code == 302
+    metas = app.extensions["almacen"].metas(USUARIO_DEMO)
+    fondo = next(m for m in metas if m.nombre == "Fondo de emergencia")
+
+    aporte = sesion_demo.post(f"/planifica/meta/{fondo.id}/aporte", data={"monto": "50000"})
+    assert aporte.status_code == 302
+    fondo_actualizada = next(m for m in app.extensions["almacen"].metas(USUARIO_DEMO) if m.id == fondo.id)
+    assert fondo_actualizada.ahorrado == 150000
+
+    html = sesion_demo.get("/planifica").get_data(as_text=True)
+    assert "Internet" in html
+    assert "Fondo de emergencia" in html
+
+
 def test_agregar_movimiento(app, sesion_demo):
     resp = sesion_demo.post("/movimientos/nuevo", data={
         "tipo": "gasto", "monto": "12345", "descripcion": "Helado", "categoria": "Comida",
