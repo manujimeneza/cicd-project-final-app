@@ -1,5 +1,6 @@
 # Botón de pánico: vuelve un ambiente a una versión anterior, a mano, desde GitHub Actions.
-# Actions → "Rollback (botón de pánico)" → Run workflow → elegir ambiente y (opcional) versión.
+# Actions → "Rollback (botón de pánico)" → Run workflow → elegir ambiente. Sin escribir nada más vuelve a la
+# versión inmediatamente anterior a la que está corriendo; el SHA solo hace falta para ir a una versión concreta.
 name: Rollback (botón de pánico)
 
 on:
@@ -11,7 +12,7 @@ on:
         options: [production, staging]
         default: production
       version:
-        description: SHA del commit a restaurar (vacío = la versión anterior a la actual)
+        description: "Opcional: SHA de una versión concreta. Vacío = la versión inmediatamente anterior"
         type: string
         required: false
 
@@ -64,15 +65,22 @@ jobs:
                      --query 'services[0].taskDefinition' --output text)
             img_actual=$(aws ecs describe-task-definition --task-definition "$actual" \
                          --query 'taskDefinition.containerDefinitions[0].image' --output text)
+            rev_actual="${actual##*:}"
+            # Terraform da de baja (INACTIVE) la revisión vieja en cada despliegue: hay que buscar en ambas.
+            # Se recorren de la más nueva a la más vieja, solo las anteriores a la que está corriendo.
+            revisiones=$(for estado in ACTIVE INACTIVE; do
+                           aws ecs list-task-definitions --family-prefix "kuadra-$AMB-task" --status "$estado" \
+                             --query 'taskDefinitionArns[]' --output text
+                         done | tr '\t' '\n' | grep . | sort -t: -k7,7 -n -r | uniq)
             img=""
-            for td in $(aws ecs list-task-definitions --family-prefix "kuadra-$AMB-task" --sort DESC \
-                        --query 'taskDefinitionArns[]' --output text); do
+            for td in $revisiones; do
+              [ "${td##*:}" -lt "$rev_actual" ] || continue
               cand=$(aws ecs describe-task-definition --task-definition "$td" \
                      --query 'taskDefinition.containerDefinitions[0].image' --output text)
               if [ "$cand" != "$img_actual" ]; then img="$cand"; break; fi
             done
             if [ -z "$img" ]; then echo "No hay una versión anterior distinta a $img_actual"; exit 1; fi
-            echo "Actual: $img_actual"
+            echo "Actual: $img_actual (revisión $rev_actual)"
           fi
           echo "Restaurar: $img"
           echo "imagen=$img" >> "$GITHUB_OUTPUT"
