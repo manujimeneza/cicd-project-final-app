@@ -94,7 +94,7 @@ gitGraph
 | Regla (Settings → Rules → Rulesets) | `main` | `develop` |
 |---|---|---|
 | Push directo | Bloqueado (solo PR) | Bloqueado (solo PR) |
-| Check obligatorio | `verificar-staging` (pipeline de develop en verde) | CI `build-and-test` en verde |
+| Requisito para fusionar | Commit **desplegado y probado en `staging`** (*required deployments*); no corre pipeline en el PR | CI `build-and-test` en verde |
 | Aprobación de un compañero | 1 obligatoria | Opcional |
 | Tipo de merge | Solo merge commit | Squash o merge |
 | Rama actualizada antes de merge | Sí | — |
@@ -156,9 +156,9 @@ flowchart LR
 | Push a `feature/*` | Nada (se valida en el PR) | — |
 | **PR → `develop`** | CI completo (sin desplegar) + análisis de Sonar en el PR | — |
 | **Merge a `develop`** | CI → IaC → deploy → smoke + aceptación + Selenium → rollback si fallan | **Staging** |
-| **PR `develop` → `main`** | **No repite el CI.** El job `verificar-staging` comprueba que el pipeline de `develop` (push) de ese mismo commit terminó en verde: CI + deploy a staging + smoke/aceptación/Selenium. Solo acepta PR desde `develop`. + 1 aprobación | — |
+| **PR `develop` → `main`** | **No corre pipeline.** La regla de `main` exige que ese commit tenga el despliegue `staging` en verde (lo marca el job de pruebas solo si smoke + aceptación + Selenium pasan) + 1 aprobación | — |
 | **Merge a `main`** | CI + Quality Gate de Sonar → **aprobación manual** → IaC → deploy → smoke → rollback si fallan | **Producción** |
-| Manual `ci.yml` (*Run workflow*) | Igual que el push de la rama elegida (útil si el último commit de `develop` solo tocó docs y no disparó el pipeline) | Según la rama |
+| Manual `ci.yml` (*Run workflow*) | Igual que el push de la rama elegida (útil si el último commit de `develop` solo tocó docs y no se desplegó en staging) | Según la rama |
 | Manual (`workflow_dispatch`) | `rollback.yml`: ambiente + versión (o la anterior) | Staging o Producción |
 
 ---
