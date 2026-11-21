@@ -1,6 +1,9 @@
 # Botón de pánico: vuelve un ambiente a una versión anterior, a mano, desde GitHub Actions.
 # Actions → "Rollback (botón de pánico)" → Run workflow → elegir ambiente. Sin escribir nada más vuelve a la
 # versión inmediatamente anterior a la que está corriendo; el SHA solo hace falta para ir a una versión concreta.
+# Si lo último que pasó en el ambiente fue un rollback (manual o automático), "la anterior" sería justo la versión
+# que se acaba de quitar; por eso un segundo pánico seguido exige escribir el SHA. La marca se guarda como tag
+# del servicio ECS y la borra el siguiente despliegue normal del CI/CD.
 name: Rollback (botón de pánico)
 
 on:
@@ -61,6 +64,15 @@ jobs:
             if ! [[ "$VERSION" =~ ^[0-9a-f]{7,40}$ ]]; then echo "Versión no válida"; exit 1; fi
             img="$IMAGE_REPO:$VERSION"
           else
+            servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                       --query 'services[0].serviceArn' --output text)
+            marca=$(aws ecs list-tags-for-resource --resource-arn "$servicio" \
+                    --query "tags[?key=='kuadra-rollback'].value | [0]" --output text)
+            if [ -n "$marca" ] && [ "$marca" != "None" ]; then
+              echo "::error::Lo último en $AMB ya fue un rollback (a ${marca}). La versión inmediatamente anterior es" \
+                   "la que se acaba de quitar, así que para volver más atrás escribe el SHA en 'version'."
+              exit 1
+            fi
             actual=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
                      --query 'services[0].taskDefinition' --output text)
             img_actual=$(aws ecs describe-task-definition --task-definition "$actual" \
@@ -113,3 +125,11 @@ jobs:
             sleep 10
           done
           exit 1
+
+      - name: Marcar que lo último fue un rollback
+        env:
+          IMAGEN: ${{ steps.destino.outputs.imagen }}
+        run: |
+          servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                     --query 'services[0].serviceArn' --output text)
+          aws ecs tag-resource --resource-arn "$servicio" --tags "key=kuadra-rollback,value=${IMAGEN##*:}"

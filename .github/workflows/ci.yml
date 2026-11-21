@@ -217,6 +217,14 @@ jobs:
           echo "- URL: $(terraform output -raw app_url)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Versión: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Quitar la marca de rollback (vuelve a habilitar el botón de pánico sin SHA)
+        env:
+          AMB: ${{ needs.preparar.outputs.ambiente }}
+        run: |
+          servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                     --query 'services[0].serviceArn' --output text)
+          aws ecs untag-resource --resource-arn "$servicio" --tag-keys kuadra-rollback
+
   # ---------------------------------------------------------------------------
   # 2. Pruebas del ambiente: PRE-PROD (staging) o POST-PROD (producción)
   # ---------------------------------------------------------------------------
@@ -323,6 +331,12 @@ jobs:
             sleep 10
           done
           exit 1
+
+      - name: Marcar que lo último fue un rollback
+        run: |
+          servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                     --query 'services[0].serviceArn' --output text)
+          aws ecs tag-resource --resource-arn "$servicio" --tags "key=kuadra-rollback,value=${IMAGEN##*:}"
 
       - name: Marcar el pipeline como fallido
         run: |
