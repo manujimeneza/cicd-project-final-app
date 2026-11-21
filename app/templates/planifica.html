@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% from "_campo.html" import campo %}
+{% block titulo %}Kuadra · Planifica{% endblock %}
+{% block encabezado %}Planifica tus finanzas{% endblock %}
+
+{% block contenido %}
+<div class="dashboard analisis">
+  <section class="tarjeta proyeccion-resumen">
+    <h2>Disponibilidad mensual</h2>
+    <div class="monto-grande {{ 'positivo' if disponible > 0 else 'negativo' }}">{{ disponible|pesos }}</div>
+    <p class="suave">Ingresos {{ ingresos|pesos }} menos recurrentes {{ compromisos|pesos }}.</p>
+  </section>
+
+  <section class="tarjeta a-dona">
+    <h2>Gastos recurrentes</h2>
+    <p class="suave">Compromisos que debes considerar al planificar el mes.</p>
+    <ul class="lista">
+      {% for recurrente in recurrentes %}
+      <li>
+        <div><strong>{{ recurrente.nombre }}</strong><br><span class="suave">{{ recurrente.categoria }} · {{ recurrente.frecuencia }} · día {{ recurrente.dia }}</span></div>
+        <div class="accion-lista">
+          <strong>{{ recurrente.monto|pesos }}</strong>
+          <form method="post" action="{{ url_for('kuadra.eliminar_recurrente', recurrente_id=recurrente.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="chip contorno pequeno boton-chip" type="submit">Eliminar</button>
+          </form>
+        </div>
+      </li>
+      {% else %}
+      <li class="suave">Aún no tienes gastos recurrentes.</li>
+      {% endfor %}
+    </ul>
+
+    <h3 class="subtitulo">Agregar recurrente</h3>
+    <form method="post" novalidate>
+      {{ recurrente_form.hidden_tag() }}
+      {{ campo(recurrente_form.nombre, placeholder="Arriendo, internet, seguro…", maxlength=40) }}
+      {{ campo(recurrente_form.monto, inputmode="numeric", placeholder="150000") }}
+      {{ campo(recurrente_form.categoria) }}
+      {{ campo(recurrente_form.frecuencia) }}
+      {{ campo(recurrente_form.dia, inputmode="numeric", placeholder="1") }}
+      <button class="boton azul" type="submit">Guardar recurrente</button>
+    </form>
+  </section>
+
+  <section class="tarjeta a-tendencia">
+    <h2>Metas de ahorro</h2>
+    <p class="suave">Convierte una meta futura en un plan mensual visible.</p>
+
+    {% for meta in metas %}
+    {% set progreso = (meta.ahorrado * 100 // meta.objetivo) if meta.objetivo else 0 %}
+    <div class="meta-ahorro">
+      <div class="cabecera">
+        <div><strong>{{ meta.nombre }}</strong><br><span class="suave">{{ meta.fecha_objetivo.strftime('%d/%m/%Y') }}</span></div>
+        <strong>{{ meta.ahorrado|pesos }} / {{ meta.objetivo|pesos }}</strong>
+      </div>
+      <div class="barra-meta"><span class="progreso-{{ (progreso // 10) * 10 }}"></span></div>
+      <div class="meta-acciones">
+        <form method="post" action="{{ url_for('kuadra.aportar_meta', meta_id=meta.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input name="monto" type="number" min="1" placeholder="Aporte" inputmode="numeric" aria-label="Monto del aporte">
+          <button class="chip azul pequeno" type="submit">Aportar</button>
+        </form>
+        <form method="post" action="{{ url_for('kuadra.eliminar_meta', meta_id=meta.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="chip contorno pequeno boton-chip" type="submit">Eliminar</button>
+        </form>
+      </div>
+    </div>
+    {% else %}
+    <p class="suave">Aún no tienes metas de ahorro.</p>
+    {% endfor %}
+
+    <h3 class="subtitulo">Crear meta</h3>
+    <form method="post" novalidate>
+      {{ meta_form.hidden_tag() }}
+      {{ campo(meta_form.nombre, placeholder="Viaje, emergencia, estudio…", maxlength=40) }}
+      {{ campo(meta_form.objetivo, inputmode="numeric", placeholder="2500000") }}
+      {{ campo(meta_form.ahorrado, inputmode="numeric", placeholder="0") }}
+      {{ campo(meta_form.fecha_objetivo) }}
+      <button class="boton azul" type="submit">Crear meta</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

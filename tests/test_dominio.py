@@ -47,6 +47,14 @@ class TestValidacion:
 
 
 class TestPersonal:
+    def test_proyeccion_topes(self):
+        hoy = date(2026, 11, 10)
+        movs = [mov(300, "Mercado", fecha=date(2026, 11, 5)), mov(200, "Comida", fecha=date(2026, 11, 7))]
+        proyeccion = d.proyeccion_topes(movs, {"Mercado": 700, "Comida": 500}, hoy)
+        mercado = next(x for x in proyeccion if x["categoria"] == "Mercado")
+        assert mercado["gastado"] == 300
+        assert mercado["proyectado"] == 900
+        assert mercado["riesgo"] is True
     def test_del_mes_filtra(self):
         movs = [mov(1, fecha=date(2026, 11, 1)), mov(2, fecha=date(2026, 10, 31))]
         assert [m.monto for m in d.del_mes(movs, 2026, 11)] == [1]
@@ -156,3 +164,35 @@ class TestCorreosYNombres:
         assert d.validar_nombre("  Manu   Jiménez ") == "Manu Jiménez"
         with pytest.raises(d.DatoInvalido):
             d.validar_nombre("x" * 41)
+
+
+class TestPlanificacion:
+    def recurrente(self, **cambios):
+        base = {"nombre": "Internet", "monto": 90000, "categoria": "Servicios", "frecuencia": "Mensual", "dia": 8}
+        return d.GastoRecurrente(**{**base, **cambios})
+
+    def meta(self, **cambios):
+        base = {"nombre": "Viaje", "objetivo": 1000, "ahorrado": 100, "fecha_objetivo": date(2999, 1, 1)}
+        return d.MetaAhorro(**{**base, **cambios})
+
+    def test_recurrente_valido(self):
+        r = self.recurrente()
+        assert d.validar_gasto_recurrente(r) is r
+
+    @pytest.mark.parametrize("cambios", [
+        {"monto": 0}, {"categoria": "Inventada"}, {"frecuencia": "Semanal"}, {"dia": 0}, {"dia": 32},
+    ])
+    def test_recurrente_invalido(self, cambios):
+        with pytest.raises(d.DatoInvalido):
+            d.validar_gasto_recurrente(self.recurrente(**cambios))
+
+    def test_meta_valida(self):
+        m = self.meta()
+        assert d.validar_meta_ahorro(m) is m
+
+    @pytest.mark.parametrize("cambios", [
+        {"objetivo": 0}, {"ahorrado": -1}, {"ahorrado": 2000}, {"fecha_objetivo": date(2000, 1, 1)},
+    ])
+    def test_meta_invalida(self, cambios):
+        with pytest.raises(d.DatoInvalido):
+            d.validar_meta_ahorro(self.meta(**cambios))
