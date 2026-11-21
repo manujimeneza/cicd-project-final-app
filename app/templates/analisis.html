@@ -42,6 +42,21 @@
   </svg>
 </section>
 
+{% if proyeccion %}
+<section class="tarjeta a-deudas" id="proyeccion">
+  <div class="cabecera"><h2>Proyección a fin de mes</h2><a class="chip contorno pequeno" href="{{ url_for('kuadra.planifica') }}">Planificar</a></div>
+  <ul class="lista">
+    {% for p in proyeccion %}
+    <li>
+      <div><strong>{{ p.categoria }}</strong><br><span class="suave">{{ p.gastado|pesos }} gastado · {{ p.proyectado|pesos }} proyectado</span></div>
+      {% if p.riesgo %}<span class="negativo">+{{ p.diferencia|pesos }}</span>
+      {% else %}<span class="positivo">{{ p.restante|pesos }} libres</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% if deudas %}
 <section class="tarjeta a-deudas" id="deudas">
   <div class="cabecera"><h2>¿Qué deuda pagar primero?</h2><a class="chip contorno pequeno" href="{{ url_for('kuadra.finanzas') }}">Editar</a></div>

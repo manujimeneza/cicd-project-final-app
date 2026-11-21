@@ -61,6 +61,24 @@ class Grupo:
     nombre: str
     creador: str
 
+@dataclass(frozen=True)
+class GastoRecurrente:
+    nombre: str
+    monto: int
+    categoria: str
+    frecuencia: str
+    dia: int
+    activo: bool = True
+    id: str = ""
+
+@dataclass(frozen=True)
+class MetaAhorro:
+    nombre: str
+    objetivo: int
+    ahorrado: int
+    fecha_objetivo: date
+    id: str = ""
+
 
 class DatoInvalido(ValueError):
     """Un dato ingresado por el usuario no es válido."""
@@ -156,6 +174,30 @@ def validar_pago(pago: Pago, miembros: list[str]) -> Pago:
         raise DatoInvalido("Ambas personas deben ser del grupo.")
     return pago
 
+def validar_gasto_recurrente(recurrente: GastoRecurrente) -> GastoRecurrente:
+    validar_nombre(recurrente.nombre)
+    if recurrente.monto <= 0:
+        raise DatoInvalido("El monto debe ser mayor que cero.")
+    if recurrente.categoria not in CATEGORIAS:
+        raise DatoInvalido("Categoría no válida.")
+    if recurrente.frecuencia not in ("Mensual", "Anual"):
+        raise DatoInvalido("Frecuencia no válida.")
+    if not 1 <= recurrente.dia <= 31:
+        raise DatoInvalido("El día debe estar entre 1 y 31.")
+    return recurrente
+
+def validar_meta_ahorro(meta: MetaAhorro) -> MetaAhorro:
+    validar_nombre(meta.nombre)
+    if meta.objetivo <= 0:
+        raise DatoInvalido("La meta debe ser mayor que cero.")
+    if meta.ahorrado < 0:
+        raise DatoInvalido("Lo ahorrado no puede ser negativo.")
+    if meta.ahorrado > meta.objetivo:
+        raise DatoInvalido("Lo ahorrado no puede superar la meta.")
+    if meta.fecha_objetivo < date.today():
+        raise DatoInvalido("La fecha objetivo debe ser igual o posterior a hoy.")
+    return meta
+
 
 FOTO_MAX_BYTES = 300 * 1024
 FIRMAS_IMAGEN = ((b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png"))
@@ -228,6 +270,31 @@ def gastos_por_dia(movimientos: list[Movimiento], hasta: date, dias: int = 7) ->
     for i in range(dias - 1, -1, -1):
         dia = hasta - timedelta(days=i)
         resultado.append((DIAS_CORTOS[dia.weekday()], totales.get(dia, 0)))
+    return resultado
+
+def proyeccion_topes(
+    movimientos: list[Movimiento],
+    topes: dict[str, int],
+    hoy: date,
+) -> list[dict]:
+    """Proyecta el gasto de fin de mes usando el ritmo observado hasta hoy."""
+    dias_mes = (date(hoy.year + (hoy.month == 12), hoy.month % 12 + 1, 1) - date(hoy.year, hoy.month, 1)).days
+    dias_transcurridos = max(hoy.day, 1)
+    por_categoria = gastos_por_categoria(del_mes(movimientos, hoy.year, hoy.month))
+    resultado = []
+    for categoria, tope in sorted(topes.items(), key=lambda x: x[0]):
+        gastado = por_categoria.get(categoria, 0)
+        proyectado = round(gastado / dias_transcurridos * dias_mes)
+        resultado.append({
+            "categoria": categoria,
+            "gastado": gastado,
+            "tope": tope,
+            "restante": max(tope - gastado, 0),
+            "proyectado": proyectado,
+            "diferencia": proyectado - tope,
+            "riesgo": proyectado > tope,
+            "porcentaje": round(gastado * 100 / tope) if tope else 0,
+        })
     return resultado
 
 def orden_pago_deudas(deudas: list[Deuda]) -> list[Deuda]:

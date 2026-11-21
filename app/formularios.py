@@ -67,3 +67,18 @@ class DeudaForm(FlaskForm):
 class PreguntaForm(FlaskForm):
     pregunta = TextAreaField("Pregunta", validators=[DataRequired(), Length(max=500)])
     siguiente = HiddenField()
+
+
+class RecurrenteForm(FlaskForm):
+    nombre = StringField("Nombre", validators=[DataRequired(), Length(max=40)])
+    monto = IntegerField("Monto", validators=[DataRequired(), NumberRange(min=1, max=1_000_000_000)])
+    categoria = SelectField("Categoría", choices=[(c, c) for c in CATEGORIAS])
+    frecuencia = SelectField("Frecuencia", choices=[("Mensual", "Mensual"), ("Anual", "Anual")])
+    dia = IntegerField("Día del mes", validators=[DataRequired(), NumberRange(min=1, max=31)])
+
+
+class MetaAhorroForm(FlaskForm):
+    nombre = StringField("Nombre", validators=[DataRequired(), Length(max=40)])
+    objetivo = IntegerField("Monto objetivo", validators=[DataRequired(), NumberRange(min=1, max=10_000_000_000)])
+    ahorrado = IntegerField("Ya ahorrado", validators=[InputRequired(), NumberRange(min=0, max=10_000_000_000)])
+    fecha_objetivo = DateField("Fecha objetivo", validators=[DataRequired()])

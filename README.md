@@ -94,7 +94,7 @@ gitGraph
 | Regla (Settings → Rules → Rulesets) | `main` | `develop` |
 |---|---|---|
 | Push directo | Bloqueado (solo PR) | Bloqueado (solo PR) |
-| CI `build-and-test` en verde | Obligatorio | Obligatorio |
+| Requisito para fusionar | Commit **desplegado y probado en `staging`** (*required deployments*); no corre pipeline en el PR | CI `build-and-test` en verde |
 | Aprobación de un compañero | 1 obligatoria | Opcional |
 | Tipo de merge | Solo merge commit | Squash o merge |
 | Rama actualizada antes de merge | Sí | — |
@@ -156,8 +156,9 @@ flowchart LR
 | Push a `feature/*` | Nada (se valida en el PR) | — |
 | **PR → `develop`** | CI completo (sin desplegar) + análisis de Sonar en el PR | — |
 | **Merge a `develop`** | CI → IaC → deploy → smoke + aceptación + Selenium → rollback si fallan | **Staging** |
-| **PR → `main`** | CI completo + Quality Gate de Sonar + 1 aprobación | — |
-| **Merge a `main`** | CI → **aprobación manual** → IaC → deploy → smoke → rollback si fallan | **Producción** |
+| **PR `develop` → `main`** | **No corre pipeline.** La regla de `main` exige que ese commit tenga el despliegue `staging` en verde (lo marca el job de pruebas solo si smoke + aceptación + Selenium pasan) + 1 aprobación | — |
+| **Merge a `main`** | CI + Quality Gate de Sonar → **aprobación manual** → IaC → deploy → smoke → rollback si fallan | **Producción** |
+| Manual `ci.yml` (*Run workflow*) | Igual que el push de la rama elegida (útil si el último commit de `develop` solo tocó docs y no se desplegó en staging) | Según la rama |
 | Manual (`workflow_dispatch`) | `rollback.yml`: ambiente + versión (o la anterior) | Staging o Producción |
 
 ---
@@ -287,7 +288,7 @@ Para producción: PR `develop → main` → **Create a merge commit** → en Act
 ### Correr localmente
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install --require-hashes --only-binary=:all: -r requirements.txt -r requirements-dev.txt
+pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
 pytest                                   # pruebas unitarias e integración
 flask --app app:create_app --debug run   # http://localhost:5000 → "Probar la demo"
 ```
