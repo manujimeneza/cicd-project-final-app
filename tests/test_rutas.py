@@ -81,6 +81,29 @@ def test_planificacion_recurrente_y_meta(app, sesion_demo):
     assert "Fondo de emergencia" in html
 
 
+def test_planificacion_errores_y_eliminar(app, sesion_demo):
+    alm = app.extensions["almacen"]
+    resp = sesion_demo.post("/planifica", data={
+        "m-nombre": "Imposible", "m-objetivo": "100", "m-ahorrado": "500",
+        "m-fecha_objetivo": "2999-01-01",
+    })
+    assert resp.status_code == 200
+    assert "Lo ahorrado no puede superar la meta." in resp.get_data(as_text=True)
+    assert not any(m.nombre == "Imposible" for m in alm.metas(USUARIO_DEMO))
+
+    meta = alm.metas(USUARIO_DEMO)[0]
+    for monto in ("0", "abc"):
+        resp = sesion_demo.post(f"/planifica/meta/{meta.id}/aporte", data={"monto": monto}, follow_redirects=True)
+        assert "El aporte debe ser mayor que cero." in resp.get_data(as_text=True)
+
+    assert sesion_demo.post(f"/planifica/meta/{meta.id}/eliminar").status_code == 302
+    assert all(m.id != meta.id for m in alm.metas(USUARIO_DEMO))
+    recurrente = alm.recurrentes(USUARIO_DEMO)[0]
+    assert sesion_demo.post(f"/planifica/recurrente/{recurrente.id}/eliminar").status_code == 302
+    assert all(r.id != recurrente.id for r in alm.recurrentes(USUARIO_DEMO))
+
+
+
 def test_agregar_movimiento(app, sesion_demo):
     resp = sesion_demo.post("/movimientos/nuevo", data={
         "tipo": "gasto", "monto": "12345", "descripcion": "Helado", "categoria": "Comida",

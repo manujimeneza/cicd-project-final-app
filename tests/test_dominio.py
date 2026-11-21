@@ -164,3 +164,35 @@ class TestCorreosYNombres:
         assert d.validar_nombre("  Manu   Jiménez ") == "Manu Jiménez"
         with pytest.raises(d.DatoInvalido):
             d.validar_nombre("x" * 41)
+
+
+class TestPlanificacion:
+    def recurrente(self, **cambios):
+        base = {"nombre": "Internet", "monto": 90000, "categoria": "Servicios", "frecuencia": "Mensual", "dia": 8}
+        return d.GastoRecurrente(**{**base, **cambios})
+
+    def meta(self, **cambios):
+        base = {"nombre": "Viaje", "objetivo": 1000, "ahorrado": 100, "fecha_objetivo": date(2999, 1, 1)}
+        return d.MetaAhorro(**{**base, **cambios})
+
+    def test_recurrente_valido(self):
+        r = self.recurrente()
+        assert d.validar_gasto_recurrente(r) is r
+
+    @pytest.mark.parametrize("cambios", [
+        {"monto": 0}, {"categoria": "Inventada"}, {"frecuencia": "Semanal"}, {"dia": 0}, {"dia": 32},
+    ])
+    def test_recurrente_invalido(self, cambios):
+        with pytest.raises(d.DatoInvalido):
+            d.validar_gasto_recurrente(self.recurrente(**cambios))
+
+    def test_meta_valida(self):
+        m = self.meta()
+        assert d.validar_meta_ahorro(m) is m
+
+    @pytest.mark.parametrize("cambios", [
+        {"objetivo": 0}, {"ahorrado": -1}, {"ahorrado": 2000}, {"fecha_objetivo": date(2000, 1, 1)},
+    ])
+    def test_meta_invalida(self, cambios):
+        with pytest.raises(d.DatoInvalido):
+            d.validar_meta_ahorro(self.meta(**cambios))

@@ -7,7 +7,7 @@ import pytest
 from moto import mock_aws
 
 from app.almacen import AlmacenDynamo
-from app.dominio import Deuda, GastoCompartido, Movimiento
+from app.dominio import Deuda, GastoCompartido, GastoRecurrente, MetaAhorro, Movimiento
 
 
 @pytest.fixture
@@ -104,3 +104,23 @@ def test_deudas_y_topes_crud(alm):
     assert deuda.nombre == "Tarjeta" and deuda.tasa_ea == 28.6 and deuda.id
     alm.eliminar_deuda("a@x.co", deuda.id)
     assert alm.deudas("a@x.co") == []
+
+
+def test_recurrentes_crud(alm):
+    alm.agregar_recurrente("a@x.co", GastoRecurrente("Arriendo", 1800000, "Hogar", "Mensual", 1))
+    [r] = alm.recurrentes("a@x.co")
+    assert (r.nombre, r.monto, r.dia, r.activo) == ("Arriendo", 1800000, 1, True) and r.id
+    alm.eliminar_recurrente("a@x.co", r.id)
+    assert alm.recurrentes("a@x.co") == []
+
+
+def test_metas_aportes_y_eliminar(alm):
+    alm.agregar_meta("a@x.co", MetaAhorro("Viaje", 1000, 100, date(2030, 1, 1)))
+    [m] = alm.metas("a@x.co")
+    assert m.fecha_objetivo == date(2030, 1, 1) and m.id
+    alm.agregar_aporte("a@x.co", m.id, 300)
+    alm.agregar_aporte("a@x.co", m.id, 5000)  # no supera el objetivo
+    alm.agregar_aporte("a@x.co", "no-existe", 10)
+    assert alm.metas("a@x.co")[0].ahorrado == 1000
+    alm.eliminar_meta("a@x.co", m.id)
+    assert alm.metas("a@x.co") == []
