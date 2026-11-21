@@ -33,8 +33,8 @@ from app.formularios import (
     MovimientoForm,
     PagoForm,
     PreguntaForm,
-    RegistroForm,
     RecurrenteForm,
+    RegistroForm,
 )
 
 bp = Blueprint("kuadra", __name__)
