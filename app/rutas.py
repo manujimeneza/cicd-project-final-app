@@ -620,7 +620,10 @@ def perfil():
                 return redirect(url_for("kuadra.perfil"))
         else:
             flash("Selecciona una imagen.", "error")
-    return render_template("perfil.html", form_nombre=form_nombre, form_foto=form_foto, correo=u)
+    insignias = d.calcular_insignias(almacen().movimientos(u), almacen().topes(u), almacen().metas(u), date.today())
+    return render_template(
+        "perfil.html", form_nombre=form_nombre, form_foto=form_foto, correo=u, insignias=insignias,
+    )
 
 
 @bp.get("/perfil/foto")

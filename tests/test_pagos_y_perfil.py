@@ -78,6 +78,13 @@ def test_pagina_perfil(sesion_demo):
     assert "Mi perfil" in html and "Cambiar foto" in html and USUARIO_DEMO in html
 
 
+def test_perfil_muestra_insignias(sesion_demo):
+    html = sesion_demo.get("/perfil").get_data(as_text=True)
+    assert "Mis insignias" in html
+    for nombre in ("Primer paso", "Meta cumplida", "Mes en regla"):
+        assert nombre in html
+
+
 def test_cambiar_nombre(app, sesion_demo):
     sesion_demo.post("/perfil", data={"n-nombre": "Manu J"})
     assert app.extensions["almacen"].perfil(USUARIO_DEMO) == "Manu J"

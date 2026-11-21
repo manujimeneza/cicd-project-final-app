@@ -301,6 +301,32 @@ def orden_pago_deudas(deudas: list[Deuda]) -> list[Deuda]:
     """Método avalancha: primero la deuda con la tasa más alta."""
     return sorted((d for d in deudas if d.saldo > 0), key=lambda d: (-d.tasa_ea, d.saldo))
 
+# ---------- Insignias ----------
+
+@dataclass(frozen=True)
+class Insignia:
+    icono: str
+    nombre: str
+    descripcion: str
+    ganada: bool
+
+
+def calcular_insignias(
+    movimientos: list[Movimiento],
+    topes: dict[str, int],
+    metas: list[MetaAhorro],
+    hoy: date,
+) -> list[Insignia]:
+    """Insignias derivadas de los datos del usuario; no se guardan, se calculan cada vez."""
+    anio, mes = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
+    gastos_mes_pasado = gastos_por_categoria(del_mes(movimientos, anio, mes))
+    mes_en_regla = bool(topes) and bool(gastos_mes_pasado) and not alertas_topes(gastos_mes_pasado, topes)
+    return [
+        Insignia("🌱", "Primer paso", "Crea tu primera meta de ahorro.", bool(metas)),
+        Insignia("🥇", "Meta cumplida", "Completa una meta de ahorro.", any(m.ahorrado >= m.objetivo for m in metas)),
+        Insignia("🛡️", "Mes en regla", "Cierra un mes sin pasarte de ningún tope.", mes_en_regla),
+    ]
+
 # ---------- Compartido ----------
 
 def saldos(gastos: list[GastoCompartido], pagos: list[Pago]) -> dict[str, int]:

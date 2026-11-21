@@ -196,3 +196,38 @@ class TestPlanificacion:
     def test_meta_invalida(self, cambios):
         with pytest.raises(d.DatoInvalido):
             d.validar_meta_ahorro(self.meta(**cambios))
+
+
+class TestInsignias:
+    META = d.MetaAhorro("Viaje", 1000, 100, date(2999, 1, 1))
+    MES_PASADO = date(2026, 10, 5)
+
+    def ganadas(self, movimientos=(), topes=None, metas=(), hoy=HOY):
+        insignias = d.calcular_insignias(list(movimientos), topes or {}, list(metas), hoy)
+        return {i.nombre for i in insignias if i.ganada}
+
+    def test_sin_datos_no_hay_insignias(self):
+        assert self.ganadas() == set()
+
+    def test_primer_paso_con_una_meta(self):
+        assert self.ganadas(metas=[self.META]) == {"Primer paso"}
+
+    def test_meta_cumplida(self):
+        cumplida = d.MetaAhorro("Bici", 500, 500, date(2999, 1, 1))
+        assert self.ganadas(metas=[self.META, cumplida]) == {"Primer paso", "Meta cumplida"}
+
+    def test_mes_en_regla(self):
+        movs = [mov(900, "Comida", fecha=self.MES_PASADO), mov(5000, "Comida")]  # el mes actual no cuenta
+        assert self.ganadas(movs, topes={"Comida": 1000}) == {"Mes en regla"}
+
+    def test_mes_pasado_con_tope_excedido(self):
+        movs = [mov(1500, "Comida", fecha=self.MES_PASADO)]
+        assert "Mes en regla" not in self.ganadas(movs, topes={"Comida": 1000})
+
+    def test_mes_en_regla_exige_topes_y_gastos(self):
+        assert "Mes en regla" not in self.ganadas([mov(900, fecha=self.MES_PASADO)])
+        assert "Mes en regla" not in self.ganadas(topes={"Comida": 1000})
+
+    def test_en_enero_revisa_diciembre(self):
+        movs = [mov(900, "Comida", fecha=date(2025, 12, 20))]
+        assert self.ganadas(movs, topes={"Comida": 1000}, hoy=date(2026, 1, 10)) == {"Mes en regla"}
