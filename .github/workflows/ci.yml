@@ -4,7 +4,8 @@
 #   push develop         ─► CI ─► IaC + deploy STAGING ─► pruebas PRE-PROD ─► rollback automático si fallan
 #   PR develop → main    ─► no ejecuta nada: la regla de main exige que ese commit esté desplegado y
 #                           probado con éxito en staging (required deployments) + 1 aprobación
-#   push main            ─► CI ─► aprobación ─► IaC + deploy PRODUCCIÓN ─► pruebas POST-PROD ─► rollback si fallan
+#   push main            ─► CI (sin reconstruir: PROMUEVE la imagen ya probada en staging) ─► aprobación ─►
+#                           IaC + deploy PRODUCCIÓN ─► pruebas POST-PROD ─► rollback si fallan
 #   Run workflow manual  ─► en develop/main igual que un push; en cualquier otra rama solo CI
 #                           (build-and-test, sin publicar la imagen ni desplegar)
 #   Botón de pánico   ─► workflow "Rollback (botón de pánico)"
@@ -37,6 +38,7 @@ jobs:
       IMAGE_NAME: ${{ vars.DOCKERHUB_USERNAME }}/kuadra
     outputs:
       image_uri: ${{ steps.publish.outputs.image_uri }}
+      version: ${{ steps.imagen.outputs.version }}  # SHA de la imagen que se despliega
 
     steps:
       # 1. Checkout
@@ -86,18 +88,51 @@ jobs:
           # El plan gratuito solo permite consultar el Quality Gate de main
           args: ${{ github.ref == 'refs/heads/main' && '-Dsonar.qualitygate.wait=true' || '' }}
 
-      # 5. Release: imagen Docker
+      # 5. Release: imagen Docker (build once, deploy many)
+      #    develop y PRs: se construye la imagen <sha del commit>.
+      #    main: NO se reconstruye. El merge commit tiene como 2.º padre el commit de develop que la regla
+      #    de main exigió desplegado y probado en staging; se promueve la imagen de ese commit.
+      - name: Elegir la imagen (construir o promover)
+        id: imagen
+        run: |
+          if [ "$GITHUB_REF_NAME" = "main" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            if [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -ne 3 ]; then
+              echo "::error::main solo se despliega desde un merge commit de develop (imagen probada en staging)."
+              exit 1
+            fi
+            version=$(git rev-parse HEAD^2)
+            echo "promover=true" >> "$GITHUB_OUTPUT"
+            echo "Promoción: producción recibe la imagen probada en staging $IMAGE_NAME:$version"
+          else
+            version="$GITHUB_SHA"
+            echo "promover=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build Docker image
-        run: docker build --build-arg APP_VERSION=${{ github.sha }} -t "$IMAGE_NAME:${{ github.sha }}" .
+        if: steps.imagen.outputs.promover != 'true'
+        run: docker build --build-arg APP_VERSION="$VERSION" -t "$IMAGE_NAME:$VERSION" .
+
+      - name: Traer la imagen probada en staging (promoción)
+        if: steps.imagen.outputs.promover == 'true'
+        run: docker pull "$IMAGE_NAME:$VERSION"
 
       - name: Image vulnerability scan (Trivy)
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
-            image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed "$IMAGE_NAME:${{ github.sha }}"
+            image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed "$IMAGE_NAME:$VERSION"
 
       - name: Container smoke check
         run: |
-          docker run -d --name kuadra -p 8000:8000 -e AMBIENTE=ci -e SECRET_KEY=ci -e MODO_DEMO=true "$IMAGE_NAME:${{ github.sha }}"
+          docker run -d --name kuadra -p 8000:8000 -e AMBIENTE=ci -e SECRET_KEY=ci -e MODO_DEMO=true "$IMAGE_NAME:$VERSION"
           timeout 30 bash -c 'until curl -sf http://localhost:8000/health > /dev/null; do sleep 1; done'
           curl -sf http://localhost:8000/bienvenida | grep -q "Kuadra"
 
@@ -112,19 +147,13 @@ jobs:
           name: reportes
           path: coverage.xml
 
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
-        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Push Docker image
         id: publish
         if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
         run: |
-          docker push "$IMAGE_NAME:${{ github.sha }}"
-          echo "image_uri=$IMAGE_NAME:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          # En una promoción la imagen ya está en Docker Hub: no se vuelve a subir
+          if [ "${{ steps.imagen.outputs.promover }}" != "true" ]; then docker push "$IMAGE_NAME:$VERSION"; fi
+          echo "image_uri=$IMAGE_NAME:$VERSION" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
   # 0. Decide el ambiente según la rama
@@ -150,7 +179,7 @@ jobs:
   # 1. IaC + Deploy (infraestructura y app) en el ambiente
   # ---------------------------------------------------------------------------
   desplegar:
-    needs: preparar
+    needs: [build-and-test, preparar]
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-${{ needs.preparar.outputs.ambiente }}
@@ -204,8 +233,8 @@ jobs:
       - name: Terraform Apply (IaC + deploy de la app)
         env:
           TF_VAR_environment_name: ${{ needs.preparar.outputs.ambiente }}
-          TF_VAR_docker_image_uri: ${{ env.IMAGE_REPO }}:${{ github.sha }}
-          TF_VAR_app_version: ${{ github.sha }}
+          TF_VAR_docker_image_uri: ${{ needs.build-and-test.outputs.image_uri }}
+          TF_VAR_app_version: ${{ needs.build-and-test.outputs.version }}
           TF_VAR_gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           TF_VAR_google_client_id: ${{ secrets.GOOGLE_CLIENT_ID }}
           TF_VAR_google_client_secret: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -218,7 +247,7 @@ jobs:
           echo "app_url=$(terraform output -raw app_url)" >> "$GITHUB_OUTPUT"
           echo "### Desplegado en ${{ needs.preparar.outputs.ambiente }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- URL: $(terraform output -raw app_url)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Versión: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Versión (imagen): \`${{ needs.build-and-test.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Quitar la marca de rollback (vuelve a habilitar el botón de pánico sin SHA)
         env:
@@ -232,7 +261,7 @@ jobs:
   # 2. Pruebas del ambiente: PRE-PROD (staging) o POST-PROD (producción)
   # ---------------------------------------------------------------------------
   probar:
-    needs: [preparar, desplegar]
+    needs: [build-and-test, preparar, desplegar]
     runs-on: ubuntu-latest
     # En staging este job registra el despliegue "staging" del commit: queda en verde solo si las
     # pruebas pasan. La regla de main lo exige (required deployments) para aceptar el PR develop → main.
@@ -241,7 +270,7 @@ jobs:
       url: ${{ needs.desplegar.outputs.app_url }}
     env:
       APP_BASE_URL: ${{ needs.desplegar.outputs.app_url }}
-      EXPECTED_VERSION: ${{ github.sha }}
+      EXPECTED_VERSION: ${{ needs.build-and-test.outputs.version }}
       EXPECTED_ENV: ${{ needs.preparar.outputs.ambiente }}
       TOKEN_PRUEBAS: ${{ needs.preparar.outputs.ambiente == 'staging' && secrets.TOKEN_PRUEBAS || '' }}
     steps:
@@ -283,7 +312,7 @@ jobs:
   # 3. Rollback automático si fallan las pruebas del ambiente
   # ---------------------------------------------------------------------------
   rollback:
-    needs: [preparar, desplegar, probar]
+    needs: [build-and-test, preparar, desplegar, probar]
     if: failure() && needs.desplegar.result == 'success' && needs.desplegar.outputs.imagen_anterior != ''
     runs-on: ubuntu-latest
     concurrency:
@@ -343,5 +372,5 @@ jobs:
 
       - name: Marcar el pipeline como fallido
         run: |
-          echo "El despliegue de ${{ github.sha }} falló sus pruebas y se revirtió."
+          echo "El despliegue de ${{ needs.build-and-test.outputs.version }} falló sus pruebas y se revirtió."
           exit 1

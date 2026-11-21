@@ -157,7 +157,7 @@ flowchart LR
 | **PR → `develop`** | CI completo (sin desplegar) + análisis de Sonar en el PR | — |
 | **Merge a `develop`** | CI → IaC → deploy → smoke + aceptación + Selenium → rollback si fallan | **Staging** |
 | **PR `develop` → `main`** | **No corre pipeline.** La regla de `main` exige que ese commit tenga el despliegue `staging` en verde (lo marca el job de pruebas solo si smoke + aceptación + Selenium pasan) + 1 aprobación | — |
-| **Merge a `main`** | CI + Quality Gate de Sonar → **aprobación manual** → IaC → deploy → smoke → rollback si fallan | **Producción** |
+| **Merge a `main`** | CI + Quality Gate de Sonar **sin reconstruir la imagen**: se **promueve** la imagen ya probada en staging (la del 2.º padre del merge commit, *build once, deploy many*) + Trivy → **aprobación manual** → IaC → deploy → smoke → rollback si fallan | **Producción** |
 | Manual `ci.yml` (*Run workflow*) | Igual que el push de la rama elegida (útil si el último commit de `develop` solo tocó docs y no se desplegó en staging) | Según la rama |
 | Manual (`workflow_dispatch`) | `rollback.yml`: ambiente + versión (o la anterior) | Staging o Producción |
 
