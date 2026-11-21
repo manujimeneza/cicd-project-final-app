@@ -231,3 +231,51 @@ class TestInsignias:
     def test_en_enero_revisa_diciembre(self):
         movs = [mov(900, "Comida", fecha=date(2025, 12, 20))]
         assert self.ganadas(movs, topes={"Comida": 1000}, hoy=date(2026, 1, 10)) == {"Mes en regla"}
+
+
+class TestTrazabilidadCompartido:
+    GRUPO = d.Grupo("g1", "Casa", "manu@x.co")
+
+    def gasto(self, **cambios):
+        base = {"fecha": HOY, "monto": 300, "descripcion": "Mercado", "pagado_por": "manu@x.co",
+                "dividido_entre": ("manu@x.co", "ana@x.co"), "id": "g", "registrado_por": "ana@x.co"}
+        return d.GastoCompartido(**{**base, **cambios})
+
+    def test_saldos_ignoran_lo_anulado(self):
+        gastos = [self.gasto(), self.gasto(monto=1000, anulado=True)]
+        pagos = [d.Pago(HOY, "ana@x.co", "manu@x.co", 999, anulado=True)]
+        assert d.saldos(gastos, pagos) == {"manu@x.co": 150, "ana@x.co": -150}
+
+    def test_solo_quien_lo_registro_puede_modificar(self):
+        gasto = self.gasto()
+        assert d.puede_modificar(gasto, "ana@x.co", self.GRUPO)
+        assert not d.puede_modificar(gasto, "manu@x.co", self.GRUPO)  # ni siquiera quien pagó o creó el grupo
+
+    def test_registros_antiguos_los_modifica_el_creador_del_grupo(self):
+        antiguo = self.gasto(registrado_por="")
+        assert d.puede_modificar(antiguo, "manu@x.co", self.GRUPO)
+        assert not d.puede_modificar(antiguo, "ana@x.co", self.GRUPO)
+
+    def test_lo_anulado_no_se_modifica(self):
+        assert not d.puede_modificar(self.gasto(anulado=True), "ana@x.co", self.GRUPO)
+
+    def test_motivo(self):
+        assert d.validar_motivo("  faltaba   el domicilio ") == "faltaba el domicilio"
+        for malo in ("", "   ", None, "x" * 121):
+            with pytest.raises(d.DatoInvalido):
+                d.validar_motivo(malo)
+
+    def cambio(self, accion, tipo="gasto", antes=None, despues=None):
+        return d.CambioCompartido(d.ahora(), "ana@x.co", accion, tipo, "g", antes, despues, "motivo")
+
+    def test_describir_edicion(self):
+        antes, despues = d.datos_de(self.gasto()), d.datos_de(self.gasto(monto=1200, dividido_entre=("ana@x.co",)))
+        texto = d.describir_cambio(self.cambio("editó", antes=antes, despues=despues), lambda c: c.split("@")[0])
+        assert texto == "monto: $300 → $1.200; dividido entre: manu, ana → ana"
+
+    def test_describir_creacion_anulacion_y_sin_cambios(self):
+        gasto = d.datos_de(self.gasto(monto=80000))
+        assert d.describir_cambio(self.cambio("creó", despues=gasto)) == "«Mercado» por $80.000"
+        pago = d.datos_de(d.Pago(HOY, "ana@x.co", "manu@x.co", 5000))
+        assert d.describir_cambio(self.cambio("anuló", "pago", antes=pago)) == "ana@x.co → manu@x.co $5.000"
+        assert d.describir_cambio(self.cambio("editó", antes=gasto, despues=gasto)) == "sin cambios en los valores"

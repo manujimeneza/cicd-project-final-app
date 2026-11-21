@@ -12,18 +12,24 @@ Diseño de la tabla (una sola tabla, claves PK/SK):
     USER#<correo>   FOTO                    foto de perfil (binario)
     GRUPO#<id>      META                    nombre y creador del grupo
     GRUPO#<id>      MIEMBRO#<correo>        miembro
-    GRUPO#<id>      GASTO#<fecha>#<id>      gasto compartido
-    GRUPO#<id>      PAGO#<fecha>#<id>       pago entre miembros
+    GRUPO#<id>      GASTO#<fecha>#<id>      gasto compartido (con autor, versión y marca de anulado)
+    GRUPO#<id>      PAGO#<fecha>#<id>       pago entre miembros (ídem)
+    GRUPO#<id>      HIST#<fecha-hora>#<id>  historial de cambios del grupo: solo se agrega, nunca se edita
+
+Los gastos y pagos de un grupo no se borran: se anulan. Cada creación, edición o anulación se escribe en la
+misma transacción que su entrada de historial, así no puede quedar un cambio sin rastro.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Protocol
 
 from app.dominio import (
+    CambioCompartido,
     Deuda,
     GastoCompartido,
     GastoRecurrente,
@@ -31,7 +37,12 @@ from app.dominio import (
     MetaAhorro,
     Movimiento,
     Pago,
+    RegistroModificado,
+    ahora,
+    datos_de,
 )
+
+Registro = GastoCompartido | Pago
 
 
 class Almacen(Protocol):
@@ -51,8 +62,12 @@ class Almacen(Protocol):
     def miembros(self, grupo_id: str) -> list[str]: ...
     def gastos_grupo(self, grupo_id: str) -> list[GastoCompartido]: ...
     def pagos_grupo(self, grupo_id: str) -> list[Pago]: ...
-    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> None: ...
-    def agregar_pago(self, grupo_id: str, pago: Pago) -> None: ...
+    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> str: ...
+    def agregar_pago(self, grupo_id: str, pago: Pago) -> str: ...
+    def registro_grupo(self, grupo_id: str, tipo: str, registro_id: str) -> Registro | None: ...
+    def editar_registro(self, grupo_id: str, nuevo: Registro, autor: str, motivo: str) -> None: ...
+    def anular_registro(self, grupo_id: str, actual: Registro, autor: str, motivo: str) -> None: ...
+    def historial_grupo(self, grupo_id: str) -> list[CambioCompartido]: ...
     def foto(self, usuario: str) -> tuple[bytes, str] | None: ...
     def guardar_foto(self, usuario: str, datos: bytes, tipo: str) -> None: ...
     def recurrentes(self, usuario: str) -> list[GastoRecurrente]: ...
@@ -66,6 +81,18 @@ class Almacen(Protocol):
 
 def _nuevo_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def _tipo(registro: Registro) -> str:
+    return "gasto" if isinstance(registro, GastoCompartido) else "pago"
+
+
+def _cambio(accion: str, autor: str, antes: Registro | None, despues: Registro | None, motivo: str = ""):
+    registro = despues or antes
+    return CambioCompartido(
+        ahora(), autor, accion, _tipo(registro), registro.id,
+        datos_de(antes) if antes else None, datos_de(despues) if despues else None, motivo,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +109,7 @@ class AlmacenMemoria:
         self._miembros: dict[str, list[str]] = {}
         self._gastos: dict[str, list[GastoCompartido]] = {}
         self._pagos: dict[str, list[Pago]] = {}
+        self._historial: dict[str, list[CambioCompartido]] = {}
         self._fotos: dict[str, tuple[bytes, str]] = {}
         self._recurrentes: dict[str, list[GastoRecurrente]] = {}
         self._metas: dict[str, list[MetaAhorro]] = {}
@@ -135,11 +163,47 @@ class AlmacenMemoria:
     def pagos_grupo(self, grupo_id: str) -> list[Pago]:
         return list(self._pagos.get(grupo_id, []))
 
-    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> None:
-        self._gastos.setdefault(grupo_id, []).append(gasto)
+    def _lista(self, grupo_id: str, tipo: str) -> list:
+        return (self._gastos if tipo == "gasto" else self._pagos).setdefault(grupo_id, [])
 
-    def agregar_pago(self, grupo_id: str, pago: Pago) -> None:
-        self._pagos.setdefault(grupo_id, []).append(pago)
+    def _agregar(self, grupo_id: str, registro: Registro) -> str:
+        registro = replace(registro, id=registro.id or _nuevo_id(), version=1, anulado=False)
+        self._lista(grupo_id, _tipo(registro)).append(registro)
+        self._historial.setdefault(grupo_id, []).append(_cambio("creó", registro.registrado_por, None, registro))
+        return registro.id
+
+    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> str:
+        return self._agregar(grupo_id, gasto)
+
+    def agregar_pago(self, grupo_id: str, pago: Pago) -> str:
+        return self._agregar(grupo_id, pago)
+
+    def registro_grupo(self, grupo_id: str, tipo: str, registro_id: str) -> Registro | None:
+        return next((r for r in self._lista(grupo_id, tipo) if r.id == registro_id), None)
+
+    def _reemplazar(self, grupo_id: str, esperado: Registro, nuevo: Registro, cambio: CambioCompartido) -> None:
+        lista = self._lista(grupo_id, _tipo(esperado))
+        actual = self.registro_grupo(grupo_id, _tipo(esperado), esperado.id)
+        if actual is None or actual.anulado or actual.version != esperado.version:
+            raise RegistroModificado(esperado.id)
+        lista[lista.index(actual)] = nuevo
+        self._historial.setdefault(grupo_id, []).append(cambio)
+
+    def editar_registro(self, grupo_id: str, nuevo: Registro, autor: str, motivo: str) -> None:
+        actual = self.registro_grupo(grupo_id, _tipo(nuevo), nuevo.id)
+        if actual is None:
+            raise RegistroModificado(nuevo.id)
+        # La fecha y el autor no se editan; la versión sube en cada cambio
+        guardado = replace(nuevo, fecha=actual.fecha, registrado_por=actual.registrado_por, anulado=False,
+                           version=nuevo.version + 1)
+        self._reemplazar(grupo_id, nuevo, guardado, _cambio("editó", autor, actual, guardado, motivo))
+
+    def anular_registro(self, grupo_id: str, actual: Registro, autor: str, motivo: str) -> None:
+        anulado = replace(actual, anulado=True, version=actual.version + 1)
+        self._reemplazar(grupo_id, actual, anulado, _cambio("anuló", autor, actual, None, motivo))
+
+    def historial_grupo(self, grupo_id: str) -> list[CambioCompartido]:
+        return sorted(self._historial.get(grupo_id, []), key=lambda c: c.fecha_hora, reverse=True)
 
     def foto(self, usuario: str) -> tuple[bytes, str] | None:
         return self._fotos.get(usuario)
@@ -291,33 +355,123 @@ class AlmacenDynamo:
     def miembros(self, grupo_id: str) -> list[str]:
         return [i["correo"] for i in self._consultar(f"GRUPO#{grupo_id}", "MIEMBRO#")]
 
+    @staticmethod
+    def _registro_de(item: dict) -> Registro:
+        comunes = {
+            "id": item["SK"].rsplit("#", 1)[-1], "registrado_por": item.get("registrado_por", ""),
+            "anulado": bool(item.get("anulado", False)), "version": int(item.get("version", 0)),
+        }
+        fecha = date.fromisoformat(item["fecha"])
+        if item["SK"].startswith("GASTO#"):
+            return GastoCompartido(fecha, int(item["monto"]), item["descripcion"], item["pagado_por"],
+                                   tuple(item["dividido_entre"]), **comunes)
+        return Pago(fecha, item["de"], item["para"], int(item["monto"]), **comunes)
+
+    @staticmethod
+    def _item_de(grupo_id: str, registro: Registro) -> dict:
+        prefijo = "GASTO" if isinstance(registro, GastoCompartido) else "PAGO"
+        return {
+            "PK": f"GRUPO#{grupo_id}", "SK": f"{prefijo}#{registro.fecha.isoformat()}#{registro.id}",
+            **datos_de(registro),
+            "registrado_por": registro.registrado_por, "anulado": registro.anulado, "version": registro.version,
+        }
+
+    @staticmethod
+    def _item_historial(grupo_id: str, cambio: CambioCompartido) -> dict:
+        item = {
+            "PK": f"GRUPO#{grupo_id}", "SK": f"HIST#{cambio.fecha_hora.isoformat()}#{_nuevo_id()}",
+            "fecha_hora": cambio.fecha_hora.isoformat(), "autor": cambio.autor, "accion": cambio.accion,
+            "tipo": cambio.tipo, "registro_id": cambio.registro_id, "motivo": cambio.motivo,
+        }
+        if cambio.antes:
+            item["antes"] = cambio.antes
+        if cambio.despues:
+            item["despues"] = cambio.despues
+        return item
+
+    def _escribir_con_historial(self, grupo_id: str, registro: Registro, cambio: CambioCompartido,
+                                version_esperada: int | None) -> None:
+        """Guarda el registro y su entrada de historial en una sola transacción.
+
+        `version_esperada` None = registro nuevo; si no, la escritura falla si otra persona lo cambió antes.
+        """
+        from botocore.exceptions import ClientError
+
+        # El cliente del recurso Table convierte solo los tipos de Python a los de DynamoDB
+        principal = {"TableName": self._t.name, "Item": self._item_de(grupo_id, registro)}
+        if version_esperada is None:
+            principal["ConditionExpression"] = "attribute_not_exists(PK)"
+        elif version_esperada == 0:  # registros anteriores a la trazabilidad no tienen versión
+            principal["ConditionExpression"] = "attribute_exists(PK) AND attribute_not_exists(#v)"
+            principal["ExpressionAttributeNames"] = {"#v": "version"}
+        else:
+            principal["ConditionExpression"] = "#v = :v"
+            principal["ExpressionAttributeNames"] = {"#v": "version"}
+            principal["ExpressionAttributeValues"] = {":v": version_esperada}
+        historial = {"TableName": self._t.name, "Item": self._item_historial(grupo_id, cambio),
+                     "ConditionExpression": "attribute_not_exists(PK)"}
+        try:
+            self._t.meta.client.transact_write_items(TransactItems=[{"Put": principal}, {"Put": historial}])
+        except ClientError as err:
+            if err.response["Error"]["Code"] == "TransactionCanceledException":
+                raise RegistroModificado(registro.id) from err
+            raise
+
     def gastos_grupo(self, grupo_id: str) -> list[GastoCompartido]:
-        gastos = [
-            GastoCompartido(date.fromisoformat(i["fecha"]), int(i["monto"]), i["descripcion"], i["pagado_por"],
-                            tuple(i["dividido_entre"]))
-            for i in self._consultar(f"GRUPO#{grupo_id}", "GASTO#")
-        ]
+        gastos = [self._registro_de(i) for i in self._consultar(f"GRUPO#{grupo_id}", "GASTO#")]
         return sorted(gastos, key=lambda g: g.fecha, reverse=True)
 
     def pagos_grupo(self, grupo_id: str) -> list[Pago]:
-        return [
-            Pago(date.fromisoformat(i["fecha"]), i["de"], i["para"], int(i["monto"]))
-            for i in self._consultar(f"GRUPO#{grupo_id}", "PAGO#")
+        return [self._registro_de(i) for i in self._consultar(f"GRUPO#{grupo_id}", "PAGO#")]
+
+    def _agregar(self, grupo_id: str, registro: Registro) -> str:
+        registro = replace(registro, id=registro.id or _nuevo_id(), version=1, anulado=False)
+        self._escribir_con_historial(grupo_id, registro, _cambio("creó", registro.registrado_por, None, registro),
+                                     None)
+        return registro.id
+
+    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> str:
+        return self._agregar(grupo_id, gasto)
+
+    def agregar_pago(self, grupo_id: str, pago: Pago) -> str:
+        return self._agregar(grupo_id, pago)
+
+    def registro_grupo(self, grupo_id: str, tipo: str, registro_id: str) -> Registro | None:
+        registros = self.gastos_grupo(grupo_id) if tipo == "gasto" else self.pagos_grupo(grupo_id)
+        return next((r for r in registros if r.id == registro_id), None)
+
+    def editar_registro(self, grupo_id: str, nuevo: Registro, autor: str, motivo: str) -> None:
+        actual = self.registro_grupo(grupo_id, _tipo(nuevo), nuevo.id)
+        if actual is None or actual.anulado:
+            raise RegistroModificado(nuevo.id)
+        guardado = replace(nuevo, fecha=actual.fecha, registrado_por=actual.registrado_por, anulado=False,
+                           version=nuevo.version + 1)
+        self._escribir_con_historial(grupo_id, guardado, _cambio("editó", autor, actual, guardado, motivo),
+                                     nuevo.version)
+
+    def anular_registro(self, grupo_id: str, actual: Registro, autor: str, motivo: str) -> None:
+        anulado = replace(actual, anulado=True, version=actual.version + 1)
+        self._escribir_con_historial(grupo_id, anulado, _cambio("anuló", autor, actual, None, motivo),
+                                     actual.version)
+
+    def historial_grupo(self, grupo_id: str) -> list[CambioCompartido]:
+        def normal(valor):
+            if isinstance(valor, Decimal):
+                return int(valor)
+            if isinstance(valor, dict):
+                return {k: normal(v) for k, v in valor.items()}
+            if isinstance(valor, list):
+                return [normal(v) for v in valor]
+            return valor
+
+        cambios = [
+            CambioCompartido(
+                datetime.fromisoformat(i["fecha_hora"]), i["autor"], i["accion"], i["tipo"], i["registro_id"],
+                normal(i.get("antes")), normal(i.get("despues")), i.get("motivo", ""),
+            )
+            for i in self._consultar(f"GRUPO#{grupo_id}", "HIST#")
         ]
-
-    def agregar_gasto_grupo(self, grupo_id: str, gasto: GastoCompartido) -> None:
-        self._t.put_item(Item={
-            "PK": f"GRUPO#{grupo_id}", "SK": f"GASTO#{gasto.fecha.isoformat()}#{_nuevo_id()}",
-            "fecha": gasto.fecha.isoformat(), "monto": gasto.monto, "descripcion": gasto.descripcion,
-            "pagado_por": gasto.pagado_por, "dividido_entre": list(gasto.dividido_entre),
-        })
-
-
-    def agregar_pago(self, grupo_id: str, pago: Pago) -> None:
-        self._t.put_item(Item={
-            "PK": f"GRUPO#{grupo_id}", "SK": f"PAGO#{pago.fecha.isoformat()}#{_nuevo_id()}",
-            "fecha": pago.fecha.isoformat(), "de": pago.de, "para": pago.para, "monto": pago.monto,
-        })
+        return sorted(cambios, key=lambda c: c.fecha_hora, reverse=True)
 
     # --- foto de perfil (máx. ~300 KB, cabe en un ítem de DynamoDB) ---
     def foto(self, usuario: str) -> tuple[bytes, str] | None:
@@ -426,9 +580,9 @@ def almacen_demo(hoy: date | None = None) -> AlmacenMemoria:
 
     casa = a.crear_grupo("Casa", u, ["ana@ejemplo.com", "sara@ejemplo.com"])
     miembros = tuple(a.miembros(casa))
-    a.agregar_gasto_grupo(casa, GastoCompartido(dia(2), 300000, "Mercado de la casa", u, miembros))
-    a.agregar_gasto_grupo(casa, GastoCompartido(dia(6), 90000, "Internet", "ana@ejemplo.com", miembros))
-    a.agregar_gasto_grupo(
-        casa, GastoCompartido(dia(8), 60000, "Comida de la mascota", "sara@ejemplo.com", (u, "sara@ejemplo.com"))
-    )
+    a.agregar_gasto_grupo(casa, GastoCompartido(dia(2), 300000, "Mercado de la casa", u, miembros, registrado_por=u))
+    a.agregar_gasto_grupo(casa, GastoCompartido(dia(6), 90000, "Internet", "ana@ejemplo.com", miembros,
+                                                registrado_por="ana@ejemplo.com"))
+    a.agregar_gasto_grupo(casa, GastoCompartido(dia(8), 60000, "Comida de la mascota", "sara@ejemplo.com",
+                                                (u, "sara@ejemplo.com"), registrado_por="sara@ejemplo.com"))
     return a

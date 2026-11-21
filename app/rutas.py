@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from dataclasses import replace
 from datetime import date
 from functools import wraps
 
@@ -24,7 +25,10 @@ from app import google_auth
 from app.almacen import USUARIO_DEMO, Almacen
 from app.asesor import AsesorNoDisponible, ModeloFalso, ModeloIA
 from app.formularios import (
+    AnularForm,
     DeudaForm,
+    EditarGastoGrupoForm,
+    EditarPagoForm,
     FotoForm,
     GastoGrupoForm,
     GrupoForm,
@@ -489,6 +493,15 @@ def compartido():
             "opciones": [(m, nombre(m)) for m in almacen().miembros(grupo.id)],
             "gastos": almacen().gastos_grupo(grupo.id)[:5],
             "pagos": sorted(almacen().pagos_grupo(grupo.id), key=lambda p: p.fecha, reverse=True)[:5],
+            "puede": lambda registro, grupo=grupo: d.puede_modificar(registro, u, grupo),
+            "historial": [
+                {
+                    "cuando": c.fecha_hora.strftime("%d/%m %H:%M"), "autor": nombre(c.autor) if c.autor else "—",
+                    "accion": c.accion, "tipo": "el gasto" if c.tipo == "gasto" else "la transferencia",
+                    "detalle": d.describir_cambio(c, nombre), "motivo": c.motivo,
+                }
+                for c in almacen().historial_grupo(grupo.id)[:10]
+            ],
         })
     return render_template("compartido.html", grupos=grupos, nombre=nombre, usuario=u)
 
@@ -548,7 +561,10 @@ def registrar_pago(grupo_id: str):
         flash("Revisa el pago: elige las personas y un monto válido.", "error")
         return redirect(url_for("kuadra.compartido"))
     try:
-        pago = d.validar_pago(d.Pago(date.today(), form.de.data, form.para.data, form.monto.data), miembros)
+        pago = d.validar_pago(
+            d.Pago(date.today(), form.de.data, form.para.data, form.monto.data, registrado_por=session["usuario"]),
+            miembros,
+        )
     except d.DatoInvalido as err:
         flash(str(err), "error")
     else:
@@ -579,6 +595,7 @@ def nuevo_gasto_grupo(grupo_id: str):
                 descripcion=form.descripcion.data.strip(),
                 pagado_por=form.pagado_por.data,
                 dividido_entre=tuple(form.dividido_entre.data),
+                registrado_por=u,
             ))
         except d.DatoInvalido as err:
             flash(str(err), "error")
@@ -587,6 +604,110 @@ def nuevo_gasto_grupo(grupo_id: str):
             flash("Gasto compartido guardado ✅", "ok")
             return redirect(url_for("kuadra.compartido"))
     return render_template("gasto_grupo_nuevo.html", form=form, grupo=grupo.nombre)
+
+
+# ---------- Editar y anular lo compartido (con historial) ----------
+
+MENSAJE_CONFLICTO = "Alguien cambió este registro mientras lo editabas. Revisa cómo quedó e inténtalo de nuevo."
+
+
+def registro_modificable(grupo: d.Grupo, tipo: str, registro_id: str):
+    """El gasto o pago, solo si existe, no está anulado y el usuario lo registró (403 si no le pertenece)."""
+    registro = almacen().registro_grupo(grupo.id, tipo, registro_id) if tipo in ("gasto", "pago") else None
+    if registro is None or registro.anulado:
+        abort(404)
+    if not d.puede_modificar(registro, session["usuario"], grupo):
+        abort(403)
+    return registro
+
+
+def version_enviada(valor: str | None) -> int:
+    try:
+        return int(valor or "")
+    except ValueError:
+        return -1  # fuerza el conflicto en vez de editar a ciegas
+
+
+@bp.route("/compartido/<grupo_id>/gasto/<gasto_id>/editar", methods=["GET", "POST"])
+@login_requerido
+def editar_gasto_grupo(grupo_id: str, gasto_id: str):
+    u = session["usuario"]
+    grupo = grupo_del_usuario(grupo_id)
+    gasto = registro_modificable(grupo, "gasto", gasto_id)
+    opciones = [(m, nombre(m)) for m in almacen().miembros(grupo.id)]
+    form = EditarGastoGrupoForm()
+    form.pagado_por.choices = form.dividido_entre.choices = opciones
+    if not form.is_submitted():
+        form.monto.data, form.descripcion.data = gasto.monto, gasto.descripcion
+        form.pagado_por.data, form.dividido_entre.data = gasto.pagado_por, list(gasto.dividido_entre)
+        form.version.data = gasto.version
+    if form.validate_on_submit():
+        try:
+            motivo = d.validar_motivo(form.motivo.data)
+            nuevo = d.validar_gasto_compartido(replace(
+                gasto, monto=form.monto.data, descripcion=form.descripcion.data.strip(),
+                pagado_por=form.pagado_por.data, dividido_entre=tuple(form.dividido_entre.data),
+                version=version_enviada(form.version.data),
+            ))
+            almacen().editar_registro(grupo.id, nuevo, u, motivo)
+        except d.DatoInvalido as err:
+            flash(str(err), "error")
+        except d.RegistroModificado:
+            flash(MENSAJE_CONFLICTO, "error")
+            return redirect(url_for("kuadra.compartido"))
+        else:
+            flash("Gasto actualizado. El cambio quedó en el historial del grupo ✅", "ok")
+            return redirect(url_for("kuadra.compartido"))
+    return render_template("gasto_grupo_nuevo.html", form=form, grupo=grupo.nombre, editando=gasto)
+
+
+@bp.route("/compartido/<grupo_id>/pago/<pago_id>/editar", methods=["GET", "POST"])
+@login_requerido
+def editar_pago(grupo_id: str, pago_id: str):
+    u = session["usuario"]
+    grupo = grupo_del_usuario(grupo_id)
+    pago = registro_modificable(grupo, "pago", pago_id)
+    form = EditarPagoForm()
+    if not form.is_submitted():
+        form.monto.data, form.version.data = pago.monto, pago.version
+    if form.validate_on_submit():
+        try:
+            motivo = d.validar_motivo(form.motivo.data)
+            nuevo = replace(pago, monto=form.monto.data, version=version_enviada(form.version.data))
+            almacen().editar_registro(grupo.id, nuevo, u, motivo)
+        except d.DatoInvalido as err:
+            flash(str(err), "error")
+        except d.RegistroModificado:
+            flash(MENSAJE_CONFLICTO, "error")
+            return redirect(url_for("kuadra.compartido"))
+        else:
+            flash("Transferencia actualizada. El cambio quedó en el historial del grupo ✅", "ok")
+            return redirect(url_for("kuadra.compartido"))
+    return render_template("editar_pago.html", form=form, grupo=grupo.nombre, pago=pago, nombre=nombre)
+
+
+@bp.post("/compartido/<grupo_id>/<tipo>/<registro_id>/anular")
+@login_requerido
+def anular_registro(grupo_id: str, tipo: str, registro_id: str):
+    """Anula (no borra) un gasto o transferencia: deja de contar en los saldos y queda en el historial."""
+    grupo = grupo_del_usuario(grupo_id)
+    registro = registro_modificable(grupo, tipo, registro_id)
+    form = AnularForm()
+    if not form.validate_on_submit():
+        flash("Escribe el motivo para anular; queda en el historial del grupo.", "error")
+        return redirect(url_for("kuadra.compartido"))
+    try:
+        motivo = d.validar_motivo(form.motivo.data)
+        almacen().anular_registro(
+            grupo.id, replace(registro, version=version_enviada(form.version.data)), session["usuario"], motivo,
+        )
+    except d.DatoInvalido as err:
+        flash(str(err), "error")
+    except d.RegistroModificado:
+        flash(MENSAJE_CONFLICTO, "error")
+    else:
+        flash("Registro anulado. Ya no cuenta en los saldos y quedó en el historial ✅", "ok")
+    return redirect(url_for("kuadra.compartido"))
 
 
 # ---------- Perfil ----------

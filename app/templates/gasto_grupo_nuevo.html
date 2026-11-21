@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_campo.html" import campo %}
-{% block encabezado %}Gasto en {{ grupo }}{% endblock %}
+{% block encabezado %}{{ 'Editar gasto' if editando else 'Gasto' }} en {{ grupo }}{% endblock %}
 {% block contenido %}
 <form method="post" class="tarjeta" novalidate>
   {{ form.hidden_tag() }}
@@ -8,7 +8,13 @@
   {{ campo(form.descripcion, placeholder="Internet") }}
   {{ campo(form.pagado_por) }}
   {{ campo(form.dividido_entre) }}
+  {% if editando %}
+  <p class="suave">Fecha: {{ editando.fecha.strftime('%d/%m/%Y') }} (no se puede cambiar)</p>
+  {{ campo(form.motivo, maxlength=120, placeholder="Ej.: faltaba el domicilio") }}
+  <p class="suave">El cambio y su motivo quedan en el historial del grupo, visible para todos.</p>
+  {% else %}
   {{ campo(form.fecha) }}
+  {% endif %}
   <button class="boton" type="submit">Guardar</button>
 </form>
 {% endblock %}
