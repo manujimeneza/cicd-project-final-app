@@ -5,6 +5,8 @@
 #   PR develop → main    ─► no ejecuta nada: la regla de main exige que ese commit esté desplegado y
 #                           probado con éxito en staging (required deployments) + 1 aprobación
 #   push main            ─► CI ─► aprobación ─► IaC + deploy PRODUCCIÓN ─► pruebas POST-PROD ─► rollback si fallan
+#   Run workflow manual  ─► en develop/main igual que un push; en cualquier otra rama solo CI
+#                           (build-and-test, sin publicar la imagen ni desplegar)
 #   Botón de pánico   ─► workflow "Rollback (botón de pánico)"
 name: CI/CD
 
@@ -111,7 +113,7 @@ jobs:
           path: coverage.xml
 
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -119,7 +121,7 @@ jobs:
 
       - name: Push Docker image
         id: publish
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
         run: |
           docker push "$IMAGE_NAME:${{ github.sha }}"
           echo "image_uri=$IMAGE_NAME:${{ github.sha }}" >> "$GITHUB_OUTPUT"
@@ -129,7 +131,8 @@ jobs:
   # ---------------------------------------------------------------------------
   preparar:
     needs: build-and-test
-    if: github.event_name != 'pull_request'  # push o ejecución manual
+    # Solo despliega desde develop (staging) o main (producción); PRs y ramas de feature solo corren el CI
+    if: github.event_name != 'pull_request' && (github.ref_name == 'develop' || github.ref_name == 'main')
     runs-on: ubuntu-latest
     outputs:
       ambiente: ${{ steps.amb.outputs.ambiente }}
@@ -216,6 +219,14 @@ jobs:
           echo "### Desplegado en ${{ needs.preparar.outputs.ambiente }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- URL: $(terraform output -raw app_url)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Versión: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Quitar la marca de rollback (vuelve a habilitar el botón de pánico sin SHA)
+        env:
+          AMB: ${{ needs.preparar.outputs.ambiente }}
+        run: |
+          servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                     --query 'services[0].serviceArn' --output text)
+          aws ecs untag-resource --resource-arn "$servicio" --tag-keys kuadra-rollback
 
   # ---------------------------------------------------------------------------
   # 2. Pruebas del ambiente: PRE-PROD (staging) o POST-PROD (producción)
@@ -323,6 +334,12 @@ jobs:
             sleep 10
           done
           exit 1
+
+      - name: Marcar que lo último fue un rollback
+        run: |
+          servicio=$(aws ecs describe-services --cluster "kuadra-$AMB-cluster" --services "kuadra-$AMB-service" \
+                     --query 'services[0].serviceArn' --output text)
+          aws ecs tag-resource --resource-arn "$servicio" --tags "key=kuadra-rollback,value=${IMAGEN##*:}"
 
       - name: Marcar el pipeline como fallido
         run: |

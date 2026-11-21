@@ -32,6 +32,23 @@ class GastoGrupoForm(FlaskForm):
     fecha = DateField("Fecha", validators=[DataRequired()])
 
 
+class EditarGastoGrupoForm(GastoGrupoForm):
+    fecha = None  # la fecha no se edita (forma parte de la clave del registro)
+    version = HiddenField()
+    motivo = StringField("Motivo del cambio", validators=[DataRequired(), Length(max=120)])
+
+
+class EditarPagoForm(FlaskForm):
+    monto = IntegerField("Monto", validators=[DataRequired(), NumberRange(min=1, max=1_000_000_000)])
+    version = HiddenField()
+    motivo = StringField("Motivo del cambio", validators=[DataRequired(), Length(max=120)])
+
+
+class AnularForm(FlaskForm):
+    version = HiddenField()
+    motivo = StringField("Motivo", validators=[DataRequired(), Length(max=120)])
+
+
 class RegistroForm(FlaskForm):
     nombre = StringField("¿Cómo te llamas?", validators=[DataRequired(), Length(max=40)])
 

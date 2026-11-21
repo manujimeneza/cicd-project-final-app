@@ -196,3 +196,86 @@ class TestPlanificacion:
     def test_meta_invalida(self, cambios):
         with pytest.raises(d.DatoInvalido):
             d.validar_meta_ahorro(self.meta(**cambios))
+
+
+class TestInsignias:
+    META = d.MetaAhorro("Viaje", 1000, 100, date(2999, 1, 1))
+    MES_PASADO = date(2026, 10, 5)
+
+    def ganadas(self, movimientos=(), topes=None, metas=(), hoy=HOY):
+        insignias = d.calcular_insignias(list(movimientos), topes or {}, list(metas), hoy)
+        return {i.nombre for i in insignias if i.ganada}
+
+    def test_sin_datos_no_hay_insignias(self):
+        assert self.ganadas() == set()
+
+    def test_primer_paso_con_una_meta(self):
+        assert self.ganadas(metas=[self.META]) == {"Primer paso"}
+
+    def test_meta_cumplida(self):
+        cumplida = d.MetaAhorro("Bici", 500, 500, date(2999, 1, 1))
+        assert self.ganadas(metas=[self.META, cumplida]) == {"Primer paso", "Meta cumplida"}
+
+    def test_mes_en_regla(self):
+        movs = [mov(900, "Comida", fecha=self.MES_PASADO), mov(5000, "Comida")]  # el mes actual no cuenta
+        assert self.ganadas(movs, topes={"Comida": 1000}) == {"Mes en regla"}
+
+    def test_mes_pasado_con_tope_excedido(self):
+        movs = [mov(1500, "Comida", fecha=self.MES_PASADO)]
+        assert "Mes en regla" not in self.ganadas(movs, topes={"Comida": 1000})
+
+    def test_mes_en_regla_exige_topes_y_gastos(self):
+        assert "Mes en regla" not in self.ganadas([mov(900, fecha=self.MES_PASADO)])
+        assert "Mes en regla" not in self.ganadas(topes={"Comida": 1000})
+
+    def test_en_enero_revisa_diciembre(self):
+        movs = [mov(900, "Comida", fecha=date(2025, 12, 20))]
+        assert self.ganadas(movs, topes={"Comida": 1000}, hoy=date(2026, 1, 10)) == {"Mes en regla"}
+
+
+class TestTrazabilidadCompartido:
+    GRUPO = d.Grupo("g1", "Casa", "manu@x.co")
+
+    def gasto(self, **cambios):
+        base = {"fecha": HOY, "monto": 300, "descripcion": "Mercado", "pagado_por": "manu@x.co",
+                "dividido_entre": ("manu@x.co", "ana@x.co"), "id": "g", "registrado_por": "ana@x.co"}
+        return d.GastoCompartido(**{**base, **cambios})
+
+    def test_saldos_ignoran_lo_anulado(self):
+        gastos = [self.gasto(), self.gasto(monto=1000, anulado=True)]
+        pagos = [d.Pago(HOY, "ana@x.co", "manu@x.co", 999, anulado=True)]
+        assert d.saldos(gastos, pagos) == {"manu@x.co": 150, "ana@x.co": -150}
+
+    def test_solo_quien_lo_registro_puede_modificar(self):
+        gasto = self.gasto()
+        assert d.puede_modificar(gasto, "ana@x.co", self.GRUPO)
+        assert not d.puede_modificar(gasto, "manu@x.co", self.GRUPO)  # ni siquiera quien pagó o creó el grupo
+
+    def test_registros_antiguos_los_modifica_el_creador_del_grupo(self):
+        antiguo = self.gasto(registrado_por="")
+        assert d.puede_modificar(antiguo, "manu@x.co", self.GRUPO)
+        assert not d.puede_modificar(antiguo, "ana@x.co", self.GRUPO)
+
+    def test_lo_anulado_no_se_modifica(self):
+        assert not d.puede_modificar(self.gasto(anulado=True), "ana@x.co", self.GRUPO)
+
+    def test_motivo(self):
+        assert d.validar_motivo("  faltaba   el domicilio ") == "faltaba el domicilio"
+        for malo in ("", "   ", None, "x" * 121):
+            with pytest.raises(d.DatoInvalido):
+                d.validar_motivo(malo)
+
+    def cambio(self, accion, tipo="gasto", antes=None, despues=None):
+        return d.CambioCompartido(d.ahora(), "ana@x.co", accion, tipo, "g", antes, despues, "motivo")
+
+    def test_describir_edicion(self):
+        antes, despues = d.datos_de(self.gasto()), d.datos_de(self.gasto(monto=1200, dividido_entre=("ana@x.co",)))
+        texto = d.describir_cambio(self.cambio("editó", antes=antes, despues=despues), lambda c: c.split("@")[0])
+        assert texto == "monto: $300 → $1.200; dividido entre: manu, ana → ana"
+
+    def test_describir_creacion_anulacion_y_sin_cambios(self):
+        gasto = d.datos_de(self.gasto(monto=80000))
+        assert d.describir_cambio(self.cambio("creó", despues=gasto)) == "«Mercado» por $80.000"
+        pago = d.datos_de(d.Pago(HOY, "ana@x.co", "manu@x.co", 5000))
+        assert d.describir_cambio(self.cambio("anuló", "pago", antes=pago)) == "ana@x.co → manu@x.co $5.000"
+        assert d.describir_cambio(self.cambio("editó", antes=gasto, despues=gasto)) == "sin cambios en los valores"
