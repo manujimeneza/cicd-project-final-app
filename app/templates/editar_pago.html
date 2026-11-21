@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "_campo.html" import campo %}
+{% block titulo %}Kuadra · Editar transferencia{% endblock %}
+{% block encabezado %}Editar transferencia en {{ grupo }}{% endblock %}
+{% block contenido %}
+<form method="post" class="tarjeta" novalidate>
+  {{ form.hidden_tag() }}
+  <p class="suave">{{ nombre(pago.de) }} → {{ nombre(pago.para) }} · {{ pago.fecha.strftime('%d/%m/%Y') }}</p>
+  {{ campo(form.monto, inputmode="numeric") }}
+  {{ campo(form.motivo, maxlength=120, placeholder="Ej.: el monto real fue otro") }}
+  <p class="suave">El cambio y su motivo quedan en el historial del grupo, visible para todos.</p>
+  <button class="boton" type="submit">Guardar cambio</button>
+</form>
+{% endblock %}

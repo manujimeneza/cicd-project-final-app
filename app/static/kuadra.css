@@ -428,3 +428,20 @@ form.tarjeta { max-width: 640px; }
 .meta-acciones { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .meta-acciones form { display: flex; align-items: center; gap: 6px; margin: 0; }
 .meta-acciones input { width: 110px; padding: 8px 10px; border-radius: 99px; }
+
+/* Insignias */
+.insignias { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 12px; }
+.insignia { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; padding: 14px 10px; border: 1px solid var(--borde); border-radius: var(--radio); }
+.insignia-icono { font-size: 2rem; }
+.insignia.bloqueada { opacity: .45; filter: grayscale(1); }
+
+/* Editar / anular lo compartido e historial */
+.acciones-registro { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; margin-top: 6px; }
+.acciones-registro a.chip { text-decoration: none; color: inherit; }
+details.anular summary { list-style: none; cursor: pointer; }
+details.anular summary::-webkit-details-marker { display: none; }
+details.anular form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+details.anular input[name="motivo"] { min-width: 200px; flex: 1; }
+.lista li.anulado > div > strong, .lista li.anulado > span:last-child { text-decoration: line-through; opacity: .6; }
+details.historial { margin-top: 12px; }
+details.historial summary { cursor: pointer; }

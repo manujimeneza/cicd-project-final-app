@@ -35,5 +35,19 @@
     </form>
   </section>
 </div>
+
+<section class="tarjeta">
+  <h2>Mis insignias</h2>
+  <ul class="insignias">
+    {% for i in insignias %}
+    <li class="insignia{% if not i.ganada %} bloqueada{% endif %}">
+      <span class="insignia-icono" aria-hidden="true">{{ i.icono }}</span>
+      <strong>{{ i.nombre }}</strong>
+      <span class="suave">{{ i.descripcion }}</span>
+      {% if not i.ganada %}<span class="oculto">(pendiente)</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='foto.js') }}"></script>{% endblock %}

@@ -1,6 +1,23 @@
 {% extends "base.html" %}
 {% block titulo %}Kuadra · Compartido{% endblock %}
 {% block encabezado %}Compartido{% endblock %}
+{% macro acciones(g, tipo, r, url_editar) %}
+  {% if g.puede(r) %}
+  <span class="acciones-registro">
+    <a class="chip contorno pequeno" href="{{ url_editar }}">Editar</a>
+    <details class="anular">
+      <summary class="chip contorno pequeno">Anular</summary>
+      <form method="post" action="{{ url_for('kuadra.anular_registro', grupo_id=g.id, tipo=tipo, registro_id=r.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="version" value="{{ r.version }}">
+        <label class="oculto" for="motivo-{{ r.id }}">Motivo para anular</label>
+        <input id="motivo-{{ r.id }}" name="motivo" maxlength="120" placeholder="Motivo (queda en el historial)" required>
+        <button class="chip azul pequeno" type="submit">Confirmar</button>
+      </form>
+    </details>
+  </span>
+  {% endif %}
+{% endmacro %}
 {% block contenido %}
 <a class="boton azul" href="{{ url_for('kuadra.nuevo_grupo') }}" id="nuevo-grupo">+ Nuevo grupo</a>
 <br>
@@ -58,7 +75,12 @@
   <h3 class="subtitulo">Transferencias registradas</h3>
   <ul class="lista">
     {% for p in g.pagos %}
-    <li><span>{{ nombre(p.de) }} → {{ nombre(p.para) }} <span class="suave">· {{ p.fecha.strftime('%d/%m') }}</span></span><span class="positivo">{{ p.monto|pesos }}</span></li>
+    <li class="{{ 'anulado' if p.anulado }}">
+      <span>{{ nombre(p.de) }} → {{ nombre(p.para) }} <span class="suave">· {{ p.fecha.strftime('%d/%m') }}</span>
+        {% if p.anulado %}<span class="chip pequeno contorno">Anulada</span>{% endif %}
+        {{ acciones(g, 'pago', p, url_for('kuadra.editar_pago', grupo_id=g.id, pago_id=p.id)) }}</span>
+      <span class="positivo">{{ p.monto|pesos }}</span>
+    </li>
     {% endfor %}
   </ul>
   {% endif %}
@@ -67,9 +89,27 @@
   <h3 class="subtitulo">Últimos gastos</h3>
   <ul class="lista">
     {% for gasto in g.gastos %}
-    <li><div><strong>{{ gasto.descripcion }}</strong><br><span class="suave">Pagó {{ nombre(gasto.pagado_por) }} · entre {{ gasto.dividido_entre|length }}</span></div><span>{{ gasto.monto|pesos }}</span></li>
+    <li class="{{ 'anulado' if gasto.anulado }}">
+      <div><strong>{{ gasto.descripcion }}</strong>{% if gasto.anulado %} <span class="chip pequeno contorno">Anulado</span>{% endif %}<br>
+        <span class="suave">Pagó {{ nombre(gasto.pagado_por) }} · entre {{ gasto.dividido_entre|length }}</span>
+        {{ acciones(g, 'gasto', gasto, url_for('kuadra.editar_gasto_grupo', grupo_id=g.id, gasto_id=gasto.id)) }}</div>
+      <span>{{ gasto.monto|pesos }}</span>
+    </li>
     {% endfor %}
   </ul>
+  {% endif %}
+
+  {% if g.historial %}
+  <details class="historial">
+    <summary class="subtitulo">Historial de cambios</summary>
+    <ul class="lista">
+      {% for c in g.historial %}
+      <li><div><strong>{{ c.autor }}</strong> {{ c.accion }} {{ c.tipo }}: {{ c.detalle }}
+        {% if c.motivo %}<br><span class="suave">Motivo: {{ c.motivo }}</span>{% endif %}</div>
+        <span class="suave">{{ c.cuando }}</span></li>
+      {% endfor %}
+    </ul>
+  </details>
   {% endif %}
 
   <form class="invitar" method="post" action="{{ url_for('kuadra.invitar', grupo_id=g.id) }}">

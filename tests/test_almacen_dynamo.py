@@ -124,3 +124,47 @@ def test_metas_aportes_y_eliminar(alm):
     assert alm.metas("a@x.co")[0].ahorrado == 1000
     alm.eliminar_meta("a@x.co", m.id)
     assert alm.metas("a@x.co") == []
+
+
+# ---------- Editar / anular con historial (DynamoDB) ----------
+
+def test_crear_editar_y_anular_dejan_historial(alm):
+    from app.dominio import RegistroModificado, saldos
+
+    gid = alm.crear_grupo("Casa", "manu@x.co", ["ana@x.co"])
+    gid_gasto = alm.agregar_gasto_grupo(gid, GastoCompartido(
+        date(2026, 11, 2), 300, "Mercado", "manu@x.co", ("manu@x.co", "ana@x.co"), registrado_por="manu@x.co"))
+    gasto = alm.registro_grupo(gid, "gasto", gid_gasto)
+    assert (gasto.version, gasto.registrado_por, gasto.anulado) == (1, "manu@x.co", False)
+
+    from dataclasses import replace
+    alm.editar_registro(gid, replace(gasto, monto=500), "manu@x.co", "faltaba el domicilio")
+    editado = alm.registro_grupo(gid, "gasto", gid_gasto)
+    assert (editado.monto, editado.version) == (500, 2)
+
+    with pytest.raises(RegistroModificado):  # alguien edita con una versión vieja
+        alm.editar_registro(gid, replace(gasto, monto=999), "manu@x.co", "otro")
+
+    alm.anular_registro(gid, editado, "manu@x.co", "estaba repetido")
+    assert alm.registro_grupo(gid, "gasto", gid_gasto).anulado
+    assert saldos(alm.gastos_grupo(gid), alm.pagos_grupo(gid)) == {}
+    with pytest.raises(RegistroModificado):
+        alm.anular_registro(gid, editado, "manu@x.co", "de nuevo")
+
+    historial = alm.historial_grupo(gid)
+    assert [c.accion for c in historial] == ["anuló", "editó", "creó"]
+    assert historial[1].antes["monto"] == 300 and historial[1].despues["monto"] == 500
+    assert historial[1].motivo == "faltaba el domicilio" and historial[0].despues is None
+
+
+def test_editar_registro_antiguo_sin_version_y_pagos(alm):
+    from dataclasses import replace
+
+    gid = alm.crear_grupo("Casa", "manu@x.co", [])
+    alm._t.put_item(Item={"PK": f"GRUPO#{gid}", "SK": "PAGO#2026-11-03#viejo", "fecha": "2026-11-03",
+                          "de": "ana@x.co", "para": "manu@x.co", "monto": 50})
+    viejo = alm.registro_grupo(gid, "pago", "viejo")
+    assert (viejo.version, viejo.registrado_por) == (0, "")
+    alm.editar_registro(gid, replace(viejo, monto=70), "manu@x.co", "corrección")
+    assert alm.registro_grupo(gid, "pago", "viejo").monto == 70
+    assert alm.registro_grupo(gid, "pago", "noexiste") is None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 CATEGORIAS = (
     "Mercado",
@@ -39,6 +39,10 @@ class GastoCompartido:
     descripcion: str
     pagado_por: str
     dividido_entre: tuple[str, ...]
+    id: str = ""
+    registrado_por: str = ""  # quien lo registró: solo esa persona puede editarlo o anularlo
+    anulado: bool = False  # anular en vez de borrar: no cuenta en los saldos pero queda a la vista
+    version: int = 0  # control de concurrencia: cada edición la incrementa
 
 @dataclass(frozen=True)
 class Pago:
@@ -46,6 +50,23 @@ class Pago:
     de: str
     para: str
     monto: int
+    id: str = ""
+    registrado_por: str = ""
+    anulado: bool = False
+    version: int = 0
+
+
+@dataclass(frozen=True)
+class CambioCompartido:
+    """Entrada del historial de un grupo. Solo se agrega; nunca se edita ni se borra."""
+    fecha_hora: datetime
+    autor: str
+    accion: str  # creó | editó | anuló
+    tipo: str  # gasto | pago
+    registro_id: str
+    antes: dict | None
+    despues: dict | None
+    motivo: str = ""
 
 @dataclass(frozen=True)
 class Deuda:
@@ -301,11 +322,39 @@ def orden_pago_deudas(deudas: list[Deuda]) -> list[Deuda]:
     """Método avalancha: primero la deuda con la tasa más alta."""
     return sorted((d for d in deudas if d.saldo > 0), key=lambda d: (-d.tasa_ea, d.saldo))
 
+# ---------- Insignias ----------
+
+@dataclass(frozen=True)
+class Insignia:
+    icono: str
+    nombre: str
+    descripcion: str
+    ganada: bool
+
+
+def calcular_insignias(
+    movimientos: list[Movimiento],
+    topes: dict[str, int],
+    metas: list[MetaAhorro],
+    hoy: date,
+) -> list[Insignia]:
+    """Insignias derivadas de los datos del usuario; no se guardan, se calculan cada vez."""
+    anio, mes = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
+    gastos_mes_pasado = gastos_por_categoria(del_mes(movimientos, anio, mes))
+    mes_en_regla = bool(topes) and bool(gastos_mes_pasado) and not alertas_topes(gastos_mes_pasado, topes)
+    return [
+        Insignia("🌱", "Primer paso", "Crea tu primera meta de ahorro.", bool(metas)),
+        Insignia("🥇", "Meta cumplida", "Completa una meta de ahorro.", any(m.ahorrado >= m.objetivo for m in metas)),
+        Insignia("🛡️", "Mes en regla", "Cierra un mes sin pasarte de ningún tope.", mes_en_regla),
+    ]
+
 # ---------- Compartido ----------
 
 def saldos(gastos: list[GastoCompartido], pagos: list[Pago]) -> dict[str, int]:
     """Saldo neto por persona. Positivo: le deben. Negativo: debe."""
     neto: dict[str, int] = defaultdict(int)
+    gastos = [g for g in gastos if not g.anulado]
+    pagos = [p for p in pagos if not p.anulado]
     for g in gastos:
         n = len(g.dividido_entre)
         parte, resto = divmod(g.monto, n)
@@ -333,6 +382,78 @@ def simplificar(saldos_netos: dict[str, int]) -> list[tuple[str, str, int]]:
         if acreedores[j][1] == 0:
             j += 1
     return transferencias
+
+# ---------- Trazabilidad de lo compartido ----------
+
+HORA_COLOMBIA = timezone(timedelta(hours=-5))  # Colombia no tiene horario de verano
+
+
+class RegistroModificado(Exception):
+    """Otra persona cambió el registro mientras se editaba; hay que recargar."""
+
+
+def ahora() -> datetime:
+    return datetime.now(HORA_COLOMBIA)
+
+
+def puede_modificar(registro: GastoCompartido | Pago, usuario: str, grupo: Grupo) -> bool:
+    """Solo quien lo registró. Los registros antiguos (sin autor) quedan a cargo del creador del grupo."""
+    if registro.anulado:
+        return False
+    if registro.registrado_por:
+        return registro.registrado_por == usuario
+    return grupo.creador == usuario
+
+
+def validar_motivo(motivo: str | None) -> str:
+    motivo = " ".join((motivo or "").split())
+    if not motivo:
+        raise DatoInvalido("Escribe el motivo del cambio; queda en el historial del grupo.")
+    if len(motivo) > 120:
+        raise DatoInvalido("El motivo puede tener máximo 120 caracteres.")
+    return motivo
+
+
+def datos_de(registro: GastoCompartido | Pago) -> dict:
+    """Lo que se guarda en el historial (antes / después) de un gasto o un pago."""
+    if isinstance(registro, GastoCompartido):
+        return {
+            "fecha": registro.fecha.isoformat(), "monto": registro.monto, "descripcion": registro.descripcion,
+            "pagado_por": registro.pagado_por, "dividido_entre": list(registro.dividido_entre),
+        }
+    return {"fecha": registro.fecha.isoformat(), "de": registro.de, "para": registro.para, "monto": registro.monto}
+
+
+ETIQUETAS_CAMPOS = {
+    "monto": "monto", "descripcion": "descripción", "pagado_por": "quién pagó",
+    "dividido_entre": "dividido entre", "de": "de", "para": "para",
+}
+
+
+def describir_cambio(cambio: CambioCompartido, nombre=lambda correo: correo) -> str:
+    """Texto legible de una entrada del historial, p. ej. «monto: $80.000 → $120.000»."""
+    def mostrar(campo: str, valor) -> str:
+        if campo == "monto":
+            return f"${int(valor):,}".replace(",", ".")
+        if campo in ("pagado_por", "de", "para"):
+            return nombre(valor)
+        if campo == "dividido_entre":
+            return ", ".join(nombre(c) for c in valor)
+        return str(valor)
+
+    if cambio.accion != "editó" or not cambio.antes or not cambio.despues:
+        datos = cambio.despues or cambio.antes or {}
+        monto = mostrar("monto", datos.get("monto", 0))
+        if cambio.tipo == "gasto":
+            return f"«{datos.get('descripcion', '')}» por {monto}"
+        return f"{nombre(datos.get('de', ''))} → {nombre(datos.get('para', ''))} {monto}"
+    partes = [
+        f"{ETIQUETAS_CAMPOS[c]}: {mostrar(c, cambio.antes[c])} → {mostrar(c, cambio.despues[c])}"
+        for c in ETIQUETAS_CAMPOS
+        if c in cambio.antes and cambio.antes.get(c) != cambio.despues.get(c)
+    ]
+    return "; ".join(partes) or "sin cambios en los valores"
+
 
 # ---------- Asesor IA ----------
 
