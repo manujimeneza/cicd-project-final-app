@@ -49,7 +49,7 @@ jobs:
 
       - name: Install dependencies (con hashes)
         run: |
-          pip install --require-hashes --only-binary=:all: -r requirements.txt -r requirements-dev.txt
+          pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
 
       # 3. Pruebas estáticas
       - name: Lint (ruff)
@@ -233,7 +233,7 @@ jobs:
 
       - name: Instalar dependencias de prueba
         run: |
-          pip install --require-hashes --only-binary=:all: -r requirements.txt -r requirements-dev.txt
+          pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
 
       - name: Esperar la versión nueva
         run: |

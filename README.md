@@ -287,7 +287,7 @@ Para producción: PR `develop → main` → **Create a merge commit** → en Act
 ### Correr localmente
 ```bash
 python3.13 -m venv .venv && . .venv/bin/activate
-pip install --require-hashes --only-binary=:all: -r requirements.txt -r requirements-dev.txt
+pip install --require-hashes --only-binary=:all: -r requirements-dev.txt
 pytest                                   # pruebas unitarias e integración
 flask --app app:create_app --debug run   # http://localhost:5000 → "Probar la demo"
 ```
