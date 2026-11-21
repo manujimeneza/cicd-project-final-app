@@ -1,8 +1,10 @@
 # CI/CD de Kuadra
 #
-#   PR a develop/main ─► CI (checkout, build, estáticas, unitarias + cobertura, release de la imagen)
-#   push develop      ─► CI ─► IaC + deploy STAGING ─► pruebas PRE-PROD ─► rollback automático si fallan
-#   push main         ─► CI ─► aprobación ─► IaC + deploy PRODUCCIÓN ─► pruebas POST-PROD ─► rollback si fallan
+#   PR feature → develop ─► CI (checkout, build, estáticas, unitarias + cobertura, Sonar, imagen)
+#   push develop         ─► CI ─► IaC + deploy STAGING ─► pruebas PRE-PROD ─► rollback automático si fallan
+#   PR develop → main    ─► NO repite el CI: verifica que el pipeline de develop (push) de ese mismo
+#                           commit terminó en verde (staging desplegado y probado)
+#   push main            ─► CI ─► aprobación ─► IaC + deploy PRODUCCIÓN ─► pruebas POST-PROD ─► rollback si fallan
 #   Botón de pánico   ─► workflow "Rollback (botón de pánico)"
 name: CI/CD
 
@@ -27,7 +29,55 @@ env:
   IMAGE_REPO: ${{ vars.DOCKERHUB_USERNAME }}/kuadra
 
 jobs:
-  build-and-test:  # Nombre usado por la protección de ramas
+  # ---------------------------------------------------------------------------
+  # PR develop → main: compuerta de promoción (check obligatorio en main)
+  # ---------------------------------------------------------------------------
+  verificar-staging:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Solo se promueve develop a main
+        if: github.head_ref != 'develop'
+        run: |
+          echo "::error::A main solo llegan PR desde develop (este viene de ${{ github.head_ref }})."
+          exit 1
+
+      - name: Pipeline de develop en verde para este commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Busca la ejecución de este workflow en develop (push o manual) para el commit del PR.
+          # Si aún está corriendo, espera hasta 30 min.
+          for i in $(seq 1 60); do
+            run=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=develop&head_sha=$SHA&per_page=20" \
+              -q '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")][0]
+                  | if . == null then "" else [.status, (.conclusion // "-"), .html_url] | @tsv end')
+            if [ -z "$run" ]; then
+              echo "::error::No hay pipeline de develop para $SHA. Ejecuta CI/CD manualmente en develop (Run workflow)."
+              exit 1
+            fi
+            read -r estado conclusion url <<< "$run"
+            if [ "$estado" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "✅ develop $SHA: CI + staging + pruebas en verde → $url"
+                echo "### ✅ Staging validado para \`$SHA\` — [ver ejecución]($url)" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "::error::El pipeline de develop para $SHA terminó en '$conclusion': $url"
+              exit 1
+            fi
+            echo "Intento $i: pipeline de develop en estado '$estado', esperando 30 s... ($url)"
+            sleep 30
+          done
+          echo "::error::El pipeline de develop no terminó a tiempo."; exit 1
+
+  build-and-test:  # Nombre usado por la protección de develop
+    # En un PR a main no se repite: se valida el pipeline de develop (job verificar-staging)
+    if: github.event_name != 'pull_request' || github.base_ref != 'main'
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: ${{ vars.DOCKERHUB_USERNAME }}/kuadra
@@ -109,7 +159,7 @@ jobs:
           path: coverage.xml
 
       - name: Login to Docker Hub
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
@@ -117,7 +167,7 @@ jobs:
 
       - name: Push Docker image
         id: publish
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: |
           docker push "$IMAGE_NAME:${{ github.sha }}"
           echo "image_uri=$IMAGE_NAME:${{ github.sha }}" >> "$GITHUB_OUTPUT"
@@ -127,7 +177,7 @@ jobs:
   # ---------------------------------------------------------------------------
   preparar:
     needs: build-and-test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'  # push o ejecución manual
     runs-on: ubuntu-latest
     outputs:
       ambiente: ${{ steps.amb.outputs.ambiente }}
